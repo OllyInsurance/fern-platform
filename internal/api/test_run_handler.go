@@ -10,11 +10,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	projectsApp "github.com/guidewire-oss/fern-platform/internal/domains/projects/application"
+	projectsDomain "github.com/guidewire-oss/fern-platform/internal/domains/projects/domain"
 	tagsApp "github.com/guidewire-oss/fern-platform/internal/domains/tags/application"
 	"github.com/guidewire-oss/fern-platform/internal/domains/testing/application"
 	"github.com/guidewire-oss/fern-platform/internal/domains/testing/domain"
-	projectsApp "github.com/guidewire-oss/fern-platform/internal/domains/projects/application"
-	projectsDomain "github.com/guidewire-oss/fern-platform/internal/domains/projects/domain"
 	"github.com/guidewire-oss/fern-platform/pkg/logging"
 )
 
@@ -87,6 +87,10 @@ func (h *TestRunHandler) createTestRun(c *gin.Context) {
 
 	// Create test run using domain service
 	if _, _, err := h.testingService.CreateTestRun(c.Request.Context(), testRun); err != nil {
+		if errors.Is(err, domain.ErrInvalidTestRun) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		h.logger.WithError(err).Error("Failed to create test run")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -517,8 +521,6 @@ func convertTestRunToAPI(tr *domain.TestRun) gin.H {
 	}
 }
 
-
-
 // --- Public (unauthenticated) test submission endpoints ---
 // These are compatible with the legacy Fern Reporter API
 
@@ -599,6 +601,10 @@ func (h *TestRunHandler) recordTestRun(c *gin.Context) {
 		createdTestRun, alreadyExisted, err := h.testingService.CreateTestRun(c.Request.Context(), newTestRun)
 		h.logger.Debug("Test run creation result", "alreadyExisted", alreadyExisted, "runID", runID)
 		if err != nil {
+			if errors.Is(err, domain.ErrInvalidTestRun) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}

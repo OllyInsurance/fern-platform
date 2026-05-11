@@ -11,12 +11,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	tagsApp "github.com/guidewire-oss/fern-platform/internal/domains/tags/application"
 	projectsApp "github.com/guidewire-oss/fern-platform/internal/domains/projects/application"
 	projectsDomain "github.com/guidewire-oss/fern-platform/internal/domains/projects/domain"
-	testMocks "github.com/guidewire-oss/fern-platform/internal/testhelpers"
+	tagsApp "github.com/guidewire-oss/fern-platform/internal/domains/tags/application"
 	"github.com/guidewire-oss/fern-platform/internal/domains/testing/application"
 	"github.com/guidewire-oss/fern-platform/internal/domains/testing/domain"
+	testMocks "github.com/guidewire-oss/fern-platform/internal/testhelpers"
 	"github.com/guidewire-oss/fern-platform/pkg/config"
 	"github.com/guidewire-oss/fern-platform/pkg/logging"
 	. "github.com/onsi/ginkgo/v2"
@@ -82,6 +82,14 @@ func (m *MockTestRunRepository) GetLatestByProjectID(ctx context.Context, projec
 	return args.Get(0).([]*domain.TestRun), args.Error(1)
 }
 
+func (m *MockTestRunRepository) GetLatestByProjectIDTagsOnly(ctx context.Context, projectID string, limit int) ([]*domain.TestRun, error) {
+	args := m.Called(ctx, projectID, limit)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*domain.TestRun), args.Error(1)
+}
+
 func (m *MockTestRunRepository) GetRecent(ctx context.Context, limit int) ([]*domain.TestRun, error) {
 	args := m.Called(ctx, limit)
 	if args.Get(0) == nil {
@@ -114,6 +122,30 @@ func (m *MockTestRunRepository) GetAll(ctx context.Context, limit, offset int) (
 func (m *MockTestRunRepository) CountByProjectID(ctx context.Context, projectID string) (int64, error) {
 	args := m.Called(ctx, projectID)
 	return args.Get(0).(int64), args.Error(1)
+}
+
+func (m *MockTestRunRepository) GetProjectStats(ctx context.Context, projectID string) (*domain.ProjectStatsResult, error) {
+	args := m.Called(ctx, projectID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*domain.ProjectStatsResult), args.Error(1)
+}
+
+func (m *MockTestRunRepository) FindByDateRangeForProjects(ctx context.Context, projectIDs []string, startDate, endDate time.Time) ([]*domain.TestRun, error) {
+	args := m.Called(ctx, projectIDs, startDate, endDate)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*domain.TestRun), args.Error(1)
+}
+
+func (m *MockTestRunRepository) GetDashboardStats(ctx context.Context) (*domain.DashboardStatsResult, error) {
+	args := m.Called(ctx)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*domain.DashboardStatsResult), args.Error(1)
 }
 
 // MockSuiteRunRepository provides a mock implementation of SuiteRunRepository
@@ -330,6 +362,45 @@ var _ = Describe("TestRunHandler", func() {
 			router.ServeHTTP(w, req)
 
 			Expect(w.Code).To(Equal(http.StatusBadRequest))
+		})
+
+		It("should return bad request when test run validation fails", func() {
+			project, err := projectsDomain.NewProject(
+				projectsDomain.ProjectID("project-123"),
+				"Test Project",
+				projectsDomain.Team("team-1"),
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			projectRepo.
+				On("FindByProjectID", mock.Anything, projectsDomain.ProjectID("project-123")).
+				Return(project, nil).
+				Once()
+
+			testRunRepo.
+				On("Create", mock.Anything, mock.Anything).
+				Return(fmt.Errorf("%w: spec name too long", domain.ErrInvalidTestRun)).
+				Once()
+
+			requestBody := map[string]interface{}{
+				"projectId": "project-123",
+			}
+			jsonBody, _ := json.Marshal(requestBody)
+
+			req := httptest.NewRequest("POST", "/api/v1/admin/test-runs", bytes.NewBuffer(jsonBody))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			Expect(w.Code).To(Equal(http.StatusBadRequest))
+
+			var response map[string]interface{}
+			err = json.Unmarshal(w.Body.Bytes(), &response)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(response["error"]).To(ContainSubstring("invalid test run"))
+			testRunRepo.AssertExpectations(GinkgoT())
+			projectRepo.AssertExpectations(GinkgoT())
 		})
 
 		It("should return not found when project doesn't exist", func() {
@@ -832,7 +903,7 @@ var _ = Describe("TestRunHandler", func() {
 				{ID: 2, ProjectID: "project-123", Status: "failed"},
 			}
 
-			testRunRepo.On("GetLatestByProjectID", mock.Anything, "project-123", 10).Return(testRuns, nil).Once()
+			testRunRepo.On("GetLatestByProjectIDTagsOnly", mock.Anything, "project-123", 10).Return(testRuns, nil).Once()
 
 			req := httptest.NewRequest("GET", "/api/v1/test-runs/recent?project_id=project-123", nil)
 			w := httptest.NewRecorder()
@@ -853,7 +924,7 @@ var _ = Describe("TestRunHandler", func() {
 				{ID: 1, ProjectID: "project-123", Status: "passed"},
 			}
 
-			testRunRepo.On("GetLatestByProjectID", mock.Anything, "project-123", 5).Return(testRuns, nil).Once()
+			testRunRepo.On("GetLatestByProjectIDTagsOnly", mock.Anything, "project-123", 5).Return(testRuns, nil).Once()
 
 			req := httptest.NewRequest("GET", "/api/v1/test-runs/recent?project_id=project-123&limit=5", nil)
 			w := httptest.NewRecorder()
@@ -872,7 +943,7 @@ var _ = Describe("TestRunHandler", func() {
 		})
 
 		It("should return internal server error when service fails", func() {
-			testRunRepo.On("GetLatestByProjectID", mock.Anything, "project-123", 10).Return(nil, errors.New("database error")).Once()
+			testRunRepo.On("GetLatestByProjectIDTagsOnly", mock.Anything, "project-123", 10).Return(nil, errors.New("database error")).Once()
 
 			req := httptest.NewRequest("GET", "/api/v1/test-runs/recent?project_id=project-123", nil)
 			w := httptest.NewRecorder()
@@ -1464,6 +1535,39 @@ var _ = Describe("TestRunHandler", func() {
 				publicRouter.ServeHTTP(w, httpReq)
 
 				Expect(w.Code).To(Equal(http.StatusBadRequest))
+			})
+
+			It("should return bad request when test run validation fails", func() {
+				req := TestRunRequest{
+					TestProjectID: "project-123",
+					SuiteRuns: []SuiteRun{
+						{
+							SuiteName: "Suite 1",
+							SpecRuns: []SpecRun{
+								{
+									SpecDescription: string(make([]byte, 300)), // simulate long spec name
+									Status:          "passed",
+								},
+							},
+						},
+					},
+				}
+
+				jsonBody, _ := json.Marshal(req)
+
+				httpReq := httptest.NewRequest("POST", "/api/v1/test-runs", bytes.NewBuffer(jsonBody))
+				httpReq.Header.Set("Content-Type", "application/json")
+				w := httptest.NewRecorder()
+				publicRouter.ServeHTTP(w, httpReq)
+
+				Expect(w.Code).To(Equal(http.StatusBadRequest))
+
+				var response map[string]interface{}
+				err := json.Unmarshal(w.Body.Bytes(), &response)
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(response["error"]).To(ContainSubstring("invalid test run"))
+				testRunRepo.AssertNotCalled(GinkgoT(), "Create", mock.Anything, mock.Anything)
 			})
 		})
 
