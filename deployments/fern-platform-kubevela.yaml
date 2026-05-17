@@ -197,17 +197,19 @@ spec:
                   "adminUrl": "http://fern-platform.local:8080",
                   "redirectUris": [
                     "http://localhost:8080/auth/callback",
+                    "http://localhost:8081/auth/callback",
                     "http://fern-platform.local:8080/auth/callback",
                     "http://fern-platform.local:8080/auth/login",
                     "http://fern-platform.local:8080/*"
                   ],
                   "webOrigins": [
                     "http://localhost:8080",
+                    "http://localhost:8081",
                     "http://fern-platform.local:8080",
                     "+"
                   ],
                   "attributes": {
-                    "post.logout.redirect.uris": "http://fern-platform.local:8080/auth/login",
+                    "post.logout.redirect.uris": "http://fern-platform.local:8080/auth/login http://localhost:8081/auth/login",
                     "frontchannel.logout.url": "http://fern-platform.local:8080/auth/login",
                     "frontchannel.logout.session.required": "false",
                     "backchannel.logout.session.required": "false",
@@ -763,9 +765,10 @@ spec:
         - redis
         - keycloak
       properties:
-        # Use ghcr.io/guidewire-oss/fern-platform:latest or docker.io/guidewireoss/fern-platform:latest
-        image: ghcr.io/guidewire-oss/fern-platform:0.1.0
-        imagePullPolicy: Always
+        # Default uses the locally-built image loaded by `make deploy-all` (build-and-load-image target).
+        # For production, override to ghcr.io/guidewire-oss/fern-platform:<tag> with imagePullPolicy: Always.
+        image: docker.io/library/fern-platform:latest
+        imagePullPolicy: Never
         namespace: fern-platform
         ports:
           - port: 8080

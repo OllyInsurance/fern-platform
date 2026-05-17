@@ -152,7 +152,7 @@ mock-jira-deploy: ## Build and deploy mock-jira service
 	@echo "📥 Importing mock-jira image into k3d cluster..."
 	@k3d image import mock-jira:latest -c fern-platform
 	@echo "📁 Ensuring namespace exists..."
-	@kubectl create namespace fern-platform 2>/dev/null || echo "✅ Namespace already exists"
+	@kubectl create namespace fern-platform 2>/dev/null || { kubectl get namespace fern-platform >/dev/null 2>&1 && echo "✅ Namespace already exists"; }
 	@echo "☸️ Deploying mock-jira to Kubernetes..."
 	@kubectl apply -f deployments/mock-jira-deployment.yaml
 	@echo "✅ Mock-jira deployed successfully"
@@ -198,7 +198,7 @@ build-and-load-image: ## Build Docker image directly and load into k3d cluster
 deploy-and-verify: ## Deploy application and verify it's running
 	@echo "☸️ Deploying Fern Platform application..."
 	@echo "📁 Creating namespace..."
-	@kubectl create namespace fern-platform > /dev/null 2>&1 || echo "✅ Namespace already exists"
+	@kubectl create namespace fern-platform 2>/dev/null || { kubectl get namespace fern-platform >/dev/null 2>&1 && echo "✅ Namespace already exists"; }
 	@echo "🔧 Applying CNPG component definition..."
 	@vela def apply deployments/components/cnpg.cue
 	@echo "🚀 Applying KubeVela application..."

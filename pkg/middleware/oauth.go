@@ -624,6 +624,7 @@ func (m *OAuthMiddleware) setUserContext(c *gin.Context, user *database.User, se
 	c.Set("user", user)
 	c.Set("user_id", user.UserID)
 	c.Set("user_role", user.Role)
+	c.Set("user_email", user.Email)
 	c.Set("session", session)
 }
 

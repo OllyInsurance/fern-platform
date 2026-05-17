@@ -181,6 +181,8 @@ func (m *AuthMiddlewareAdapter) RequireAuth() gin.HandlerFunc {
 				// Set the service account user in context
 				c.Set("user", serviceAccountUser)
 				c.Set("user_id", userID)
+				c.Set("user_role", string(role))
+				c.Set("user_email", email)
 				c.Set("is_service_account", true)
 				c.Next()
 				return
@@ -513,6 +515,7 @@ func (m *AuthMiddlewareAdapter) setUserContext(c *gin.Context, user *domain.User
 	c.Set("user", user)
 	c.Set("user_id", user.UserID)
 	c.Set("user_role", string(user.Role))
+	c.Set("user_email", user.Email)
 	c.Set("session", session)
 }
 

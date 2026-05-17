@@ -44,7 +44,7 @@ func (h *BaseHandler) getTeamID(c *gin.Context) string {
 
 // getUserRole extracts the user role from the context
 func (h *BaseHandler) getUserRole(c *gin.Context) string {
-	role, _ := c.Get("role")
+	role, _ := c.Get("user_role")
 	s, _ := role.(string)
 	return s
 }
