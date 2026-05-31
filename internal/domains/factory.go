@@ -1,6 +1,10 @@
 package domains
 
 import (
+	"encoding/hex"
+	"fmt"
+	"os"
+
 	"gorm.io/gorm"
 
 	// Auth domain
@@ -70,7 +74,8 @@ type DomainFactory struct {
 	summaryHandler *summaryInterfaces.SummaryHandler
 
 	// Integrations domain
-	jiraConnectionService *integrations.JiraConnectionService
+	jiraConnectionService    *integrations.JiraConnectionService
+	jiraFieldMappingService  *integrations.JiraFieldMappingService
 }
 
 // NewDomainFactory creates a new domain factory
@@ -258,19 +263,36 @@ func (f *DomainFactory) initIntegrationsDomain() {
 	// Create JIRA client
 	jiraClient := integrations.NewDefaultJiraClient()
 
-	// Get encryption key from config (or generate one)
-	// For now, use a placeholder - in production this should come from secure config
-	encryptionKey := []byte("your-32-byte-encryption-key-here") // TODO: Load from secure config
+	keyHex := os.Getenv("JIRA_ENCRYPTION_KEY")
+	if keyHex == "" {
+		panic("JIRA_ENCRYPTION_KEY environment variable is not set; generate with: openssl rand -hex 32")
+	}
+	encryptionKey, err := hex.DecodeString(keyHex)
+	if err != nil {
+		panic(fmt.Sprintf("JIRA_ENCRYPTION_KEY is not valid hex: %v", err))
+	}
+	if len(encryptionKey) != 32 {
+		panic(fmt.Sprintf("JIRA_ENCRYPTION_KEY must decode to exactly 32 bytes, got %d", len(encryptionKey)))
+	}
 
-	// Create service
+	// Create JIRA connection service
 	f.jiraConnectionService = integrations.NewJiraConnectionService(
 		jiraConnRepo,
 		jiraClient,
 		encryptionKey,
 	)
+
+	// Create JIRA field mapping repo and service
+	jiraFieldMappingRepo := integrationsInfra.NewGormJiraFieldMappingRepository(f.db)
+	f.jiraFieldMappingService = integrations.NewJiraFieldMappingService(jiraFieldMappingRepo, jiraConnRepo)
 }
 
 // GetJiraConnectionService returns the JIRA connection service
 func (f *DomainFactory) GetJiraConnectionService() *integrations.JiraConnectionService {
 	return f.jiraConnectionService
+}
+
+// GetJiraFieldMappingService returns the JIRA field mapping service
+func (f *DomainFactory) GetJiraFieldMappingService() *integrations.JiraFieldMappingService {
+	return f.jiraFieldMappingService
 }
