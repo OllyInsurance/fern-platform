@@ -65,6 +65,12 @@ func NewAuthMiddlewareAdapter(
 func (m *AuthMiddlewareAdapter) RequireAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !m.config.Enabled || !m.config.OAuth.Enabled {
+			// Auth is disabled: set anonymous user context so handlers that
+			// call getUserID/getUserEmail/getUserRole do not panic on nil type assertions.
+			c.Set("user_id", "anonymous")
+			c.Set("user_email", "anonymous@fern-platform")
+			c.Set("role", "admin")
+			c.Set("team_id", "")
 			c.Next()
 			return
 		}
@@ -232,6 +238,15 @@ func (m *AuthMiddlewareAdapter) RequireAuth() gin.HandlerFunc {
 // RequireAdmin middleware ensures user has admin role
 func (m *AuthMiddlewareAdapter) RequireAdmin() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// When auth is disabled, bypass all privilege checks and set anonymous admin context.
+		if !m.config.Enabled || !m.config.OAuth.Enabled {
+			c.Set("user_id", "anonymous")
+			c.Set("user_email", "anonymous@fern-platform")
+			c.Set("role", "admin")
+			c.Set("team_id", "")
+			c.Next()
+			return
+		}
 		// First ensure user is authenticated
 		m.RequireAuth()(c)
 		if c.IsAborted() {
@@ -267,6 +282,15 @@ func (m *AuthMiddlewareAdapter) RequireAdmin() gin.HandlerFunc {
 // RequireManager middleware ensures user has manager privileges
 func (m *AuthMiddlewareAdapter) RequireManager() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// When auth is disabled, bypass all privilege checks and set anonymous admin context.
+		if !m.config.Enabled || !m.config.OAuth.Enabled {
+			c.Set("user_id", "anonymous")
+			c.Set("user_email", "anonymous@fern-platform")
+			c.Set("role", "admin")
+			c.Set("team_id", "")
+			c.Next()
+			return
+		}
 		// First ensure user is authenticated
 		m.RequireAuth()(c)
 		if c.IsAborted() {

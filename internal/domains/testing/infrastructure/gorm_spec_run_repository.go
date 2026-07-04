@@ -34,6 +34,7 @@ func (r *GormSpecRunRepository) Create(ctx context.Context, specRun *domain.Spec
 		Duration:     int64(specRun.Duration / time.Millisecond),
 		ErrorMessage: specRun.ErrorMessage,
 		StackTrace:   specRun.StackTrace,
+		VideoURL:     specRun.VideoURL,
 		RetryCount:   specRun.RetryCount,
 		IsFlaky:      specRun.IsFlaky,
 		Tags:         r.converter.ConvertDomainTagsToDatabase(specRun.Tags),
@@ -64,6 +65,7 @@ func (r *GormSpecRunRepository) CreateBatch(ctx context.Context, specRuns []*dom
 			Duration:     int64(specRun.Duration / time.Millisecond),
 			ErrorMessage: specRun.ErrorMessage,
 			StackTrace:   specRun.StackTrace,
+			VideoURL:     specRun.VideoURL,
 			RetryCount:   specRun.RetryCount,
 			IsFlaky:      specRun.IsFlaky,
 			Tags:         r.converter.ConvertDomainTagsToDatabase(specRun.Tags),
@@ -155,6 +157,7 @@ func (r *GormSpecRunRepository) toDomainSpecRun(dbSpecRun *database.SpecRun) *do
 		ErrorMessage:   dbSpecRun.ErrorMessage,
 		FailureMessage: dbSpecRun.ErrorMessage, // Use error message
 		StackTrace:     dbSpecRun.StackTrace,
+		VideoURL:       dbSpecRun.VideoURL,
 		RetryCount:     dbSpecRun.RetryCount,
 		IsFlaky:        dbSpecRun.IsFlaky,
 	}

@@ -1032,6 +1032,7 @@ func (r *suiteRunResolver) SpecRuns(ctx context.Context, obj *model.SuiteRun) ([
 			Duration:     int(sp.Duration),
 			ErrorMessage: convertStringPtr(sp.ErrorMessage),
 			StackTrace:   convertStringPtr(sp.StackTrace),
+			VideoURL:     convertStringPtr(sp.VideoURL),
 			RetryCount:   sp.RetryCount,
 			IsFlaky:      sp.IsFlaky,
 			Tags:         tags,

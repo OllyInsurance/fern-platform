@@ -49,6 +49,8 @@ type SpecRun struct {
 	StartTime       time.Time `json:"start_time"`
 	EndTime         time.Time `json:"end_time"`
 	Tags            []Tag     `json:"tags"`
+	RetryCount      int       `json:"retry_count"`
+	VideoURL        string    `json:"video_url"`
 }
 
 type Tag struct {
@@ -92,8 +94,6 @@ func ConvertDomainTestRunToAPI(tr *testingDomain.TestRun) gin.H {
 	}
 }
 
-
-
 // ConvertProjectToAPI converts a domain Project to API response format
 func ConvertProjectToAPI(p *projectsDomain.Project) gin.H {
 	snapshot := p.ToSnapshot()
@@ -111,8 +111,6 @@ func ConvertProjectToAPI(p *projectsDomain.Project) gin.H {
 		"updatedAt":     snapshot.UpdatedAt,
 	}
 }
-
-
 
 // Request to Domain conversion methods (package-level functions)
 
@@ -167,8 +165,6 @@ func ConvertApiSuiteRunsToDomain(reqSuiteRuns []SuiteRun) []testingDomain.SuiteR
 	return domainSuiteRuns // []testingDomain.SuiteRun
 }
 
-
-
 // ConvertSpecRuns converts request SpecRuns to domain SpecRuns
 // Returns []*testingDomain.SpecRun (slice of pointers)
 func ConvertSpecRuns(reqSpecRuns []SpecRun) []*testingDomain.SpecRun {
@@ -212,17 +208,16 @@ func ConvertSpecRuns(reqSpecRuns []SpecRun) []*testingDomain.SpecRun {
 			Duration:       duration,
 			ErrorMessage:   errorMessage,
 			FailureMessage: failureMessage,
-			StackTrace:     "",    // Set if available in your data
-			RetryCount:     0,     // Set based on your requirements
+			StackTrace:     "", // Set if available in your data
+			RetryCount:     reqSpec.RetryCount,
 			IsFlaky:        false, // Set based on your requirements
 			Tags:           domainTags,
+			VideoURL:       reqSpec.VideoURL,
 		}
 	}
 
 	return domainSpecRuns // []*testingDomain.SpecRun
 }
-
-
 
 // Calculation and status helper methods (package-level functions)
 
@@ -237,8 +232,6 @@ func CalculateOverallStatus(suiteRuns []SuiteRun) string {
 	}
 	return "passed"
 }
-
-
 
 // CalculateTestCounts calculates test statistics from SpecRuns
 func CalculateTestCounts(specRuns []*testingDomain.SpecRun) (total, passed, failed, skipped int) {
@@ -258,8 +251,6 @@ func CalculateTestCounts(specRuns []*testingDomain.SpecRun) (total, passed, fail
 	return total, passed, failed, skipped
 }
 
-
-
 // CalculateOverallTestCounts calculates total test statistics from all suite runs
 func CalculateOverallTestCounts(suiteRuns []testingDomain.SuiteRun) (total, passed, failed, skipped int) {
 	for _, suite := range suiteRuns {
@@ -270,8 +261,6 @@ func CalculateOverallTestCounts(suiteRuns []testingDomain.SuiteRun) (total, pass
 	}
 	return total, passed, failed, skipped
 }
-
-
 
 // CalculateSuiteStatus determines suite status based on spec runs
 func CalculateSuiteStatus(specRuns []*testingDomain.SpecRun) string {
@@ -300,8 +289,6 @@ func CalculateSuiteStatus(specRuns []*testingDomain.SpecRun) string {
 	return "passed"
 }
 
-
-
 // ConvertApiTagsToDomain converts API tags to domain tags
 func ConvertApiTagsToDomain(apiTags []Tag) []testingDomain.Tag {
 	if len(apiTags) == 0 {
@@ -319,8 +306,6 @@ func ConvertApiTagsToDomain(apiTags []Tag) []testingDomain.Tag {
 	}
 	return domainTags
 }
-
-
 
 // MergeUniqueTags merges two tag slices, removing duplicates by ID
 func MergeUniqueTags(existingTags, newTags []testingDomain.Tag) []testingDomain.Tag {
@@ -348,8 +333,6 @@ func MergeUniqueTags(existingTags, newTags []testingDomain.Tag) []testingDomain.
 
 	return tags
 }
-
-
 
 // FilterTestRunsByUserGroups filters test runs to only include those from projects
 // whose team matches any of the user's groups
@@ -391,5 +374,3 @@ func FilterTestRunsByUserGroups(ctx context.Context, testRuns []*testingDomain.T
 
 	return filtered
 }
-
-

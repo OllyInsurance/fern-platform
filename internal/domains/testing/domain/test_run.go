@@ -61,6 +61,7 @@ type SpecRun struct {
 	ErrorMessage   string        `json:"error_message"`
 	FailureMessage string        `json:"failure_message"`
 	StackTrace     string        `json:"stack_trace"`
+	VideoURL       string        `json:"video_url"`
 	RetryCount     int           `json:"retry_count"`
 	IsFlaky        bool          `json:"is_flaky"`
 	Tags           []Tag         `json:"tags"`
@@ -86,11 +87,11 @@ type TestRunSummary struct {
 // ProjectStatsResult holds all stats needed for the GraphQL ProjectStats type,
 // computed in a single SQL aggregation query.
 type ProjectStatsResult struct {
-	TotalRuns       int64
-	AvgDurationMs   float64
-	PassedRuns      int64
-	UniqueBranches  int64
-	LastRunTime     *time.Time
+	TotalRuns      int64
+	AvgDurationMs  float64
+	PassedRuns     int64
+	UniqueBranches int64
+	LastRunTime    *time.Time
 }
 
 // DashboardStatsResult holds platform-wide aggregates for the DashboardSummary query.

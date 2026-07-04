@@ -252,6 +252,7 @@ func (r *Resolver) ConvertSpecRunToGraphQL(spec *testingDomain.SpecRun) *model.S
 		Duration:     int(spec.Duration.Milliseconds()),
 		ErrorMessage: errorMessage,
 		StackTrace:   stackTrace,
+		VideoURL:     convertStringPtr(spec.VideoURL),
 		RetryCount:   spec.RetryCount,
 		IsFlaky:      spec.IsFlaky,
 		Tags:         tags,

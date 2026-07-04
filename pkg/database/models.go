@@ -117,6 +117,7 @@ type SpecRun struct {
 	Duration     int64      `gorm:"column:duration_ms" json:"duration_ms"`
 	ErrorMessage string     `gorm:"type:text" json:"error_message,omitempty"`
 	StackTrace   string     `gorm:"type:text" json:"stack_trace,omitempty"`
+	VideoURL     string     `gorm:"type:text" json:"video_url,omitempty"`
 	RetryCount   int        `json:"retry_count"`
 	IsFlaky      bool       `gorm:"index" json:"is_flaky"`
 	Tags         []Tag      `gorm:"many2many:spec_run_tags;" json:"tags,omitempty"`
@@ -168,10 +169,10 @@ type UserScope struct {
 
 // JiraFieldMapping represents the JIRA-to-Fern field mapping for a project in the database
 type JiraFieldMapping struct {
-	ID        uint           `gorm:"primarykey"`
-	ProjectID string         `gorm:"column:project_id;not null"`
+	ID        uint            `gorm:"primarykey"`
+	ProjectID string          `gorm:"column:project_id;not null"`
 	Entries   json.RawMessage `gorm:"column:entries;not null;default:'[]'"`
-	UpdatedBy string         `gorm:"column:updated_by;not null;default:''"`
+	UpdatedBy string          `gorm:"column:updated_by;not null;default:''"`
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	DeletedAt gorm.DeletedAt `gorm:"index"`
@@ -183,17 +184,17 @@ func (JiraFieldMapping) TableName() string { return "jira_field_mappings" }
 // JiraConnection represents a JIRA integration connection in the database
 type JiraConnection struct {
 	BaseModel
-	ProjectID           string    `gorm:"type:varchar(36);not null;index" json:"project_id"`
-	Name                string    `gorm:"type:varchar(255);not null" json:"name"`
-	JiraURL             string    `gorm:"type:varchar(500);not null" json:"jira_url"`
-	AuthenticationType  string    `gorm:"type:varchar(50);not null" json:"authentication_type"`
-	ProjectKey          string    `gorm:"type:varchar(50);not null" json:"project_key"`
-	Username            string    `gorm:"type:varchar(255);not null" json:"username"`
-	EncryptedCredential string    `gorm:"type:text;not null" json:"-"`
-	Status              string    `gorm:"type:varchar(50);not null;default:'pending'" json:"status"`
-	IsActive            bool      `gorm:"not null;default:false" json:"is_active"`
+	ProjectID           string     `gorm:"type:varchar(36);not null;index" json:"project_id"`
+	Name                string     `gorm:"type:varchar(255);not null" json:"name"`
+	JiraURL             string     `gorm:"type:varchar(500);not null" json:"jira_url"`
+	AuthenticationType  string     `gorm:"type:varchar(50);not null" json:"authentication_type"`
+	ProjectKey          string     `gorm:"type:varchar(50);not null" json:"project_key"`
+	Username            string     `gorm:"type:varchar(255);not null" json:"username"`
+	EncryptedCredential string     `gorm:"type:text;not null" json:"-"`
+	Status              string     `gorm:"type:varchar(50);not null;default:'pending'" json:"status"`
+	IsActive            bool       `gorm:"not null;default:false" json:"is_active"`
 	LastTestedAt        *time.Time `json:"last_tested_at,omitempty"`
-	VersionFilter       string    `gorm:"type:varchar(500);not null;default:''" json:"version_filter"`
+	VersionFilter       string     `gorm:"type:varchar(500);not null;default:''" json:"version_filter"`
 }
 
 // ProjectPermission represents explicit project permissions for a user

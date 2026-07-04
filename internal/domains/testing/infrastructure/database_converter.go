@@ -95,6 +95,7 @@ func (c *DatabaseConverter) ConvertDomainSpecRunsToDatabase(domainSpecRuns []*do
 			Duration:     int64(domainSpec.Duration / time.Millisecond), // Convert to milliseconds
 			ErrorMessage: errorMessage,                                  // Combine ErrorMessage and FailureMessage
 			StackTrace:   domainSpec.StackTrace,
+			VideoURL:     domainSpec.VideoURL,
 			RetryCount:   domainSpec.RetryCount,
 			IsFlaky:      domainSpec.IsFlaky,
 			Tags:         dbTags,
@@ -195,6 +196,7 @@ func (c *DatabaseConverter) ConvertSpecRunToDomain(dbSpec *database.SpecRun) *do
 		ErrorMessage:   dbSpec.ErrorMessage,
 		FailureMessage: "", // Not in database model
 		StackTrace:     dbSpec.StackTrace,
+		VideoURL:       dbSpec.VideoURL,
 		RetryCount:     dbSpec.RetryCount,
 		IsFlaky:        dbSpec.IsFlaky,
 		Tags:           tags,

@@ -210,6 +210,7 @@ const QUERIES = {
                         endTime
                         errorMessage
                         stackTrace
+                        videoUrl
                         isFlaky
                         tags {
                             id
@@ -317,6 +318,7 @@ const QUERIES = {
                         endTime
                         errorMessage
                         stackTrace
+                        videoUrl
                         isFlaky
                         tags {
                             id

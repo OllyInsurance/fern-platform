@@ -55,6 +55,7 @@ type SpecRun {
   duration: Int! # Duration in milliseconds
   errorMessage: String
   stackTrace: String
+  videoUrl: String
   retryCount: Int!
   isFlaky: Boolean!
   tags: [Tag!]!

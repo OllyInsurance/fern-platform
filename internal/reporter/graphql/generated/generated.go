@@ -318,6 +318,7 @@ type ComplexityRoot struct {
 		SuiteRunID   func(childComplexity int) int
 		Tags         func(childComplexity int) int
 		UpdatedAt    func(childComplexity int) int
+		VideoURL     func(childComplexity int) int
 	}
 
 	SpecTreemapNode struct {
@@ -2149,6 +2150,13 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 
 		return e.complexity.SpecRun.UpdatedAt(childComplexity), true
 
+	case "SpecRun.videoUrl":
+		if e.complexity.SpecRun.VideoURL == nil {
+			break
+		}
+
+		return e.complexity.SpecRun.VideoURL(childComplexity), true
+
 	case "SpecTreemapNode.duration":
 		if e.complexity.SpecTreemapNode.Duration == nil {
 			break
@@ -3154,6 +3162,7 @@ type SpecRun {
   duration: Int! # Duration in milliseconds
   errorMessage: String
   stackTrace: String
+  videoUrl: String
   retryCount: Int!
   isFlaky: Boolean!
   tags: [Tag!]!
@@ -9157,6 +9166,8 @@ func (ec *executionContext) fieldContext_Mutation_markSpecAsFlaky(ctx context.Co
 				return ec.fieldContext_SpecRun_errorMessage(ctx, field)
 			case "stackTrace":
 				return ec.fieldContext_SpecRun_stackTrace(ctx, field)
+			case "videoUrl":
+				return ec.fieldContext_SpecRun_videoUrl(ctx, field)
 			case "retryCount":
 				return ec.fieldContext_SpecRun_retryCount(ctx, field)
 			case "isFlaky":
@@ -14488,6 +14499,47 @@ func (ec *executionContext) fieldContext_SpecRun_stackTrace(_ context.Context, f
 	return fc, nil
 }
 
+func (ec *executionContext) _SpecRun_videoUrl(ctx context.Context, field graphql.CollectedField, obj *model.SpecRun) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_SpecRun_videoUrl(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.VideoURL, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_SpecRun_videoUrl(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "SpecRun",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _SpecRun_retryCount(ctx context.Context, field graphql.CollectedField, obj *model.SpecRun) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_SpecRun_retryCount(ctx, field)
 	if err != nil {
@@ -14785,6 +14837,8 @@ func (ec *executionContext) fieldContext_SpecTreemapNode_spec(_ context.Context,
 				return ec.fieldContext_SpecRun_errorMessage(ctx, field)
 			case "stackTrace":
 				return ec.fieldContext_SpecRun_stackTrace(ctx, field)
+			case "videoUrl":
+				return ec.fieldContext_SpecRun_videoUrl(ctx, field)
 			case "retryCount":
 				return ec.fieldContext_SpecRun_retryCount(ctx, field)
 			case "isFlaky":
@@ -16255,6 +16309,8 @@ func (ec *executionContext) fieldContext_SuiteRun_specRuns(_ context.Context, fi
 				return ec.fieldContext_SpecRun_errorMessage(ctx, field)
 			case "stackTrace":
 				return ec.fieldContext_SpecRun_stackTrace(ctx, field)
+			case "videoUrl":
+				return ec.fieldContext_SpecRun_videoUrl(ctx, field)
 			case "retryCount":
 				return ec.fieldContext_SpecRun_retryCount(ctx, field)
 			case "isFlaky":
@@ -25277,6 +25333,8 @@ func (ec *executionContext) _SpecRun(ctx context.Context, sel ast.SelectionSet, 
 			out.Values[i] = ec._SpecRun_errorMessage(ctx, field, obj)
 		case "stackTrace":
 			out.Values[i] = ec._SpecRun_stackTrace(ctx, field, obj)
+		case "videoUrl":
+			out.Values[i] = ec._SpecRun_videoUrl(ctx, field, obj)
 		case "retryCount":
 			out.Values[i] = ec._SpecRun_retryCount(ctx, field, obj)
 			if out.Values[i] == graphql.Null {

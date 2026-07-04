@@ -15,7 +15,7 @@
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone@7.23.10/babel.min.js"></script>
     <script src="https://d3js.org/d3.v7.min.js"></script>
-    <script src="/web/js/graphql-client.js?v=5"></script>
+    <script src="/web/js/graphql-client.js?v=6"></script>
     <script src="/web/js/timestamp-component.js?v=2"></script>
     <script src="/web/js/duration-utils.js?v=1"></script>
     
@@ -1605,6 +1605,18 @@
     <script type="text/babel">
         // Destructure React hooks at the top level
         const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+        // Fern video proof points (patch 0002): inline per-spec video player.
+        // Only embeds CDN-prefixed URLs — fern's ingest is public + tokenless.
+        const FERN_VIDEO_CDN_PREFIX = 'https://cdn.dev.hiolly.com/';
+        const VideoCell = ({ url }) => {
+            const [failed, setFailed] = useState(false);
+            const muted = { color: 'var(--text-tertiary)', fontSize: '0.875rem' };
+            if (!url || !url.startsWith(FERN_VIDEO_CDN_PREFIX)) return <span style={muted}>—</span>;
+            if (failed) return <span style={muted}>video unavailable</span>;
+            return <video controls preload="none" src={url} onError={() => setFailed(true)}
+                style={{maxWidth: '240px', maxHeight: '150px', borderRadius: 'var(--radius-md)', display: 'block'}} />;
+        };
         
         if (typeof window.formatDuration === 'undefined') {
             console.error('formatDuration function is not available! This will cause rendering issues.');
@@ -2704,7 +2716,7 @@
                             <button 
                                 key={item.path}
                                 onClick={() => navigate(item.path)}
-                                className={`nav-button ${route === item.path ? 'active' : ''} ${item.adminOnly ? 'admin-nav-item' : ''} ${item.managerOnly ? 'manager-nav-item' : ''}`}
+                                className={`nav-button ${(route === item.path || route.startsWith(item.path + '/')) ? 'active' : ''} ${item.adminOnly ? 'admin-nav-item' : ''} ${item.managerOnly ? 'manager-nav-item' : ''}`}
                                 style={(item.adminOnly || item.managerOnly) ? {
                                     borderLeft: '3px solid var(--primary)',
                                     background: 'linear-gradient(90deg, rgba(16, 185, 129, 0.05) 0%, transparent 100%)'
@@ -4719,11 +4731,13 @@
             const [testRuns, setTestRuns] = useState([]);
             const [selectedRun, setSelectedRun] = useState(null);
             const [selectedSuite, setSelectedSuite] = useState(null);
+            const [selectedSpec, setSelectedSpec] = useState(null);
             const [suiteData, setSuiteData] = useState([]);
             const [specData, setSpecData] = useState([]);
             const [loading, setLoading] = useState(true);
             const [error, setError] = useState(null);
             const [view, setView] = useState('runs'); // 'runs', 'suites', 'specs'
+            const { route, navigate } = useRouter();
 
             useEffect(() => {
                 fetchData();
@@ -4900,6 +4914,7 @@
 
                 setSuiteData(suites);
                 setView('suites');
+                return suites;
             };
 
             // Extract real spec data from suite metadata
@@ -4942,6 +4957,8 @@
                             status: specRun.status,
                             duration_ms: specRun.duration,
                             error_message: specRun.errorMessage || null,
+                            video_url: specRun.videoUrl || null,
+                            stack_trace: specRun.stackTrace || null,
                             suite_id: suite.id,
                             started_at: specRun.startTime,
                             finished_at: specRun.endTime,
@@ -4958,21 +4975,62 @@
                 
                 setSpecData(specs);
                 setView('specs');
+                return specs;
             };
 
-            const handleBackToRuns = () => {
-                setSelectedRun(null);
-                setSelectedSuite(null);
-                setSuiteData([]);
-                setSpecData([]);
-                setView('runs');
-            };
+            const handleBackToRuns = () => navigate('/test-runs');
+            const handleBackToSuites = () => navigate('/test-runs/' + selectedRun.runId);
+            const handleBackToSpecs = () => navigate('/test-runs/' + selectedRun.runId + '/' + encodeURIComponent(selectedSuite.name));
 
-            const handleBackToSuites = () => {
-                setSelectedSuite(null);
-                setSpecData([]);
-                setView('suites');
-            };
+            // Deep-linkable drill-down: sync runs/suites/specs from the URL fragment
+            //   #/test-runs[/<runId>[/<encodedSuiteName>]]
+            // Click handlers only navigate(); this effect loads the matching state,
+            // so shared links and browser back/forward both work.
+            useEffect(() => {
+                if (loading) return;
+                const m = route.match(/^\/test-runs(?:\/([^\/]+)(?:\/([^\/]+)(?:\/([^\/]+))?)?)?$/);
+                const targetRunId = m && m[1] ? decodeURIComponent(m[1]) : null;
+                const targetSuite = m && m[2] ? decodeURIComponent(m[2]) : null;
+                const targetSpec = m && m[3] ? decodeURIComponent(m[3]) : null;
+                let cancelled = false;
+                (async () => {
+                    if (!targetRunId) {
+                        if (selectedRun || view !== 'runs') {
+                            setSelectedRun(null); setSelectedSuite(null); setSelectedSpec(null);
+                            setSuiteData([]); setSpecData([]); setView('runs');
+                        }
+                        return;
+                    }
+                    let suites = suiteData;
+                    if (!selectedRun || selectedRun.runId !== targetRunId) {
+                        const run = testRuns.find(r => r.runId === targetRunId) || { runId: targetRunId };
+                        suites = await handleRunClick(run);
+                        if (cancelled || !suites) return;
+                    }
+                    if (!targetSuite) {
+                        if (selectedSuite || view === 'specs' || view === 'spec') {
+                            setSelectedSuite(null); setSelectedSpec(null); setSpecData([]); setView('suites');
+                        }
+                        return;
+                    }
+                    let specs = specData;
+                    if (!selectedSuite || selectedSuite.name !== targetSuite) {
+                        const suite = (suites || []).find(s => s.name === targetSuite);
+                        if (!suite) return;
+                        specs = handleSuiteClick(suite);
+                        if (!specs) return;
+                    }
+                    if (targetSpec) {
+                        if (!selectedSpec || selectedSpec.name !== targetSpec) {
+                            const spec = (specs || []).find(x => x.name === targetSpec);
+                            if (spec) { setSelectedSpec(spec); setView('spec'); }
+                        }
+                    } else if (selectedSpec || view === 'spec') {
+                        setSelectedSpec(null); setView('specs');
+                    }
+                })();
+                return () => { cancelled = true; };
+            }, [route, testRuns, loading]);
 
             if (loading) {
                 return (
@@ -5021,6 +5079,20 @@
                                 <span>{selectedSuite?.name}</span>
                             </>
                         )}
+                        {view === 'spec' && (
+                            <>
+                                <span className="breadcrumb-separator">▶</span>
+                                <button onClick={handleBackToSuites}>
+                                    {selectedRun?.projectName || selectedRun?.projectId || '-'} - {selectedRun?.runId || '-'}
+                                </button>
+                                <span className="breadcrumb-separator">▶</span>
+                                <button onClick={handleBackToSpecs}>
+                                    {selectedSuite?.name}
+                                </button>
+                                <span className="breadcrumb-separator">▶</span>
+                                <span>{selectedSpec?.name}</span>
+                            </>
+                        )}
                     </div>
                 );
             };
@@ -5051,7 +5123,7 @@
                                     <tbody>
                                         {testRuns.map((run) => (
                                             <tr key={run.id} 
-                                                onClick={() => handleRunClick(run)}
+                                                onClick={() => navigate('/test-runs/' + run.runId)}
                                                 style={{cursor: 'pointer'}}
                                                 onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-secondary)'}
                                                 onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
@@ -5204,7 +5276,7 @@
                                     {suiteData.map((suite, suiteIdx) => {
                                         return (
                                             <tr key={suite.id}
-                                                onClick={() => handleSuiteClick(suite)}
+                                                onClick={() => navigate('/test-runs/' + selectedRun.runId + '/' + encodeURIComponent(suite.name))}
                                                 style={{cursor: 'pointer'}}
                                                 onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-secondary)'}
                                                 onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
@@ -5310,13 +5382,14 @@
                                         <th>Status</th>
                                         <th>Duration</th>
                                         <th>Error Message</th>
+                                        <th>Video</th>
                                         <th>Tags</th>
                                         <th>Started</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     {specData.map((spec) => (
-                                        <tr key={spec.id}>
+                                        <tr key={spec.id} style={{cursor: 'pointer'}} onClick={() => navigate('/test-runs/' + selectedRun.runId + '/' + encodeURIComponent(selectedSuite.name) + '/' + encodeURIComponent(spec.name))}>
                                             <td>
                                                 <div style={{fontWeight: '600', fontSize: '0.875rem'}}>{spec.name}</div>
                                             </td>
@@ -5336,6 +5409,9 @@
                                                 ) : (
                                                     <span style={{color: 'var(--text-tertiary)', fontSize: '0.875rem'}}>-</span>
                                                 )}
+                                            </td>
+                                            <td onClick={(e) => e.stopPropagation()}>
+                                                <VideoCell url={spec.video_url} />
                                             </td>
                                             <td>
                                                 {(() => {
@@ -5367,6 +5443,65 @@
                                 </tbody>
                             </table>
                         </div>
+                    </div>
+                );
+            }
+
+            if (view === 'spec') {
+                const sp = selectedSpec || {};
+                const statusClass = sp.status === 'passed' ? 'healthy' : sp.status === 'failed' ? 'error' : 'warning';
+                const hasVideo = sp.video_url && sp.video_url.startsWith(FERN_VIDEO_CDN_PREFIX);
+                return (
+                    <div className="container fade-in">
+                        {renderBreadcrumb()}
+                        <h2 style={{marginBottom: '1.5rem', color: 'var(--text-primary)', fontSize: '2rem', fontWeight: '700', letterSpacing: '-0.025em'}}>
+                            <i className="fas fa-vial" style={{marginRight: '0.75rem', color: 'var(--primary)'}}></i>
+                            {sp.name}
+                        </h2>
+                        <div style={{marginBottom: '1.5rem', padding: '1rem', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-light)'}}>
+                            <div style={{fontSize: '0.875rem', color: 'var(--text-secondary)', display: 'flex', flexWrap: 'wrap', gap: '1.25rem', alignItems: 'center'}}>
+                                <span className={`status ${statusClass}`}>{sp.status}</span>
+                                <span><strong>Duration:</strong> {typeof window.formatDuration !== 'undefined' ? window.formatDuration(sp.duration_ms) : `${sp.duration_ms}ms`}</span>
+                                <span><strong>Started:</strong> <Timestamp timestamp={sp.startTime || sp.started_at} /></span>
+                                <span><strong>Project:</strong> {selectedRun?.projectName || selectedRun?.projectId}</span>
+                                <span><strong>Run ID:</strong> {selectedRun?.runId}</span>
+                                <span><strong>Suite:</strong> {selectedSuite?.name}</span>
+                            </div>
+                            {sp.tags && sp.tags.length > 0 && (
+                                <div style={{fontSize: '0.875rem', marginTop: '0.75rem'}}>
+                                    <strong style={{color: 'var(--text-secondary)'}}>Tags:</strong>{' '}
+                                    {sp.tags.map((tag, i) => (
+                                        <span key={tag.id || i} style={{display: 'inline-block', padding: '0.35rem 0.75rem', marginLeft: '0.5rem', background: '#3b82f6', color: '#ffffff', borderRadius: '0.375rem', fontSize: '0.8rem', fontWeight: '600'}}>
+                                            {tag.name}
+                                        </span>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                        <div style={{marginBottom: '1.5rem'}}>
+                            <h3 style={{fontSize: '0.9rem', fontWeight: '700', color: 'var(--text-secondary)', marginBottom: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em'}}>
+                                <i className="fas fa-video" style={{marginRight: '0.5rem', color: 'var(--primary)'}}></i>Video Proof
+                            </h3>
+                            {hasVideo ? (
+                                <video controls preload="metadata" src={sp.video_url} style={{maxWidth: '100%', maxHeight: '520px', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-light)', background: '#000', display: 'block'}} />
+                            ) : (
+                                <div style={{color: 'var(--text-tertiary)', fontSize: '0.875rem', padding: '1rem', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-light)'}}>No video recorded for this test.</div>
+                            )}
+                        </div>
+                        {sp.error_message && (
+                            <div style={{marginBottom: '1.5rem'}}>
+                                <h3 style={{fontSize: '0.9rem', fontWeight: '700', color: 'var(--error)', marginBottom: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em'}}>
+                                    <i className="fas fa-exclamation-triangle" style={{marginRight: '0.5rem'}}></i>Error
+                                </h3>
+                                <pre style={{fontSize: '0.8rem', background: 'var(--bg-tertiary)', padding: '1rem', borderRadius: 'var(--radius-md)', color: 'var(--error)', overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0}}>{sp.error_message}</pre>
+                            </div>
+                        )}
+                        {sp.stack_trace && (
+                            <div style={{marginBottom: '1.5rem'}}>
+                                <h3 style={{fontSize: '0.9rem', fontWeight: '700', color: 'var(--text-secondary)', marginBottom: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em'}}>Stack Trace</h3>
+                                <pre style={{fontSize: '0.75rem', background: 'var(--bg-tertiary)', padding: '1rem', borderRadius: 'var(--radius-md)', color: 'var(--text-secondary)', overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0}}>{sp.stack_trace}</pre>
+                            </div>
+                        )}
                     </div>
                 );
             }
@@ -9402,6 +9537,10 @@
                     return <ProjectSettings />;
                 }
                 
+                if (route === '/test-runs' || route.startsWith('/test-runs/')) {
+                    return <TestRuns />;
+                }
+
                 switch (route) {
                     case '/test-summaries':
                         return <TestSummaries />;
