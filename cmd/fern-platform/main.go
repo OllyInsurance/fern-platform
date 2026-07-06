@@ -92,6 +92,12 @@ func main() {
 		router.Use(middleware.NewCORSMiddleware(corsConfig))
 	}
 
+	// Share links: short presigned codes for UI paths. The handler doubles as
+	// the auth middleware's share-code validator so shared links keep working
+	// when auth is re-enabled.
+	shareHandler := api.NewShareHandler(db.DB, logger)
+	authMiddleware.SetShareCodeValidator(shareHandler)
+
 	// Initialize domain-based API handler (V2 split handler architecture)
 	domainHandler := api.NewDomainHandlerV2(
 		testingService,
@@ -100,6 +106,7 @@ func main() {
 		flakyDetectionService,
 		jiraConnectionService,
 		summaryHandler,
+		shareHandler,
 		authMiddleware,
 		logger,
 	)

@@ -25,6 +25,7 @@ type DomainHandlerV2 struct {
 	jiraConnectionHandler *JiraConnectionHandler
 	flakyTestHandler      *FlakyTestHandler
 	summaryHandler        *summaryInterfaces.SummaryHandler
+	shareHandler          *ShareHandler
 
 	// Middleware
 	authMiddleware *interfaces.AuthMiddlewareAdapter
@@ -39,6 +40,7 @@ func NewDomainHandlerV2(
 	flakyDetectionService *analyticsApp.FlakyDetectionService,
 	jiraConnectionService *integrations.JiraConnectionService,
 	summaryHandler *summaryInterfaces.SummaryHandler,
+	shareHandler *ShareHandler,
 	authMiddleware *interfaces.AuthMiddlewareAdapter,
 	logger *logging.Logger,
 ) *DomainHandlerV2 {
@@ -55,6 +57,7 @@ func NewDomainHandlerV2(
 		jiraConnectionHandler: NewJiraConnectionHandler(baseHandler, jiraConnectionService, projectService),
 		flakyTestHandler:      NewFlakyTestHandler(flakyDetectionService, logger),
 		summaryHandler:        summaryHandler,
+		shareHandler:          shareHandler,
 		authMiddleware:        authMiddleware,
 		logger:                logger,
 	}
@@ -108,6 +111,7 @@ func (h *DomainHandlerV2) RegisterRoutes(router *gin.Engine) {
 	h.tagHandler.RegisterRoutes(userGroup, adminGroup)
 	h.systemHandler.RegisterRoutes(adminGroup)
 	h.flakyTestHandler.RegisterRoutes(userGroup)
+	h.shareHandler.RegisterRoutes(router, userGroup)
 
 	// Summary
 	userGroup.GET("/summary/:projectId/:seed", h.summaryHandler.GetSummary)

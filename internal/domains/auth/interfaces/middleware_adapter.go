@@ -36,12 +36,20 @@ type OAuthAdapterIface interface {
 }
 
 // AuthMiddlewareAdapter provides Gin middleware using auth domain services
+// ShareCodeValidator reports whether a share code exists and is unexpired.
+// Implemented by the share-link handler (internal/api/share_handler.go) and
+// wired in main via SetShareCodeValidator.
+type ShareCodeValidator interface {
+	ValidateShareCode(ctx context.Context, code string) bool
+}
+
 type AuthMiddlewareAdapter struct {
-	authService  AuthService
-	authzService *application.AuthorizationService
-	oauthAdapter OAuthAdapterIface
-	config       *config.AuthConfig
-	logger       *logging.Logger
+	authService    AuthService
+	authzService   *application.AuthorizationService
+	oauthAdapter   OAuthAdapterIface
+	config         *config.AuthConfig
+	logger         *logging.Logger
+	shareValidator ShareCodeValidator
 }
 
 // NewAuthMiddlewareAdapter creates a new auth middleware adapter
@@ -61,6 +69,36 @@ func NewAuthMiddlewareAdapter(
 	}
 }
 
+// SetShareCodeValidator wires the validator behind the share-link auth bypass.
+func (m *AuthMiddlewareAdapter) SetShareCodeValidator(v ShareCodeValidator) {
+	m.shareValidator = v
+}
+
+// ShareCodeFromRequest extracts a share code from the ?share= query param or
+// the X-Share-Code header. The query param wins: it is what /s/{code}
+// redirects put on the URL.
+func ShareCodeFromRequest(c *gin.Context) string {
+	if code := c.Query("share"); code != "" {
+		return code
+	}
+	return c.GetHeader("X-Share-Code")
+}
+
+// IsShareBypassEligible is the decision function for the share-link auth
+// bypass: which method+path combinations a VALID share code may pass without
+// a session even when auth is enabled. Only GraphQL reads (GET/POST /query)
+// and the static assets the SPA needs (/web/, /docs/) qualify — REST ingest
+// and admin surfaces never do.
+func IsShareBypassEligible(method, path string) bool {
+	if path == "/query" {
+		return method == http.MethodGet || method == http.MethodPost
+	}
+	if method != http.MethodGet {
+		return false
+	}
+	return strings.HasPrefix(path, "/web/") || strings.HasPrefix(path, "/docs/")
+}
+
 // RequireAuth middleware validates OAuth sessions and ensures user is authenticated
 func (m *AuthMiddlewareAdapter) RequireAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -73,6 +111,22 @@ func (m *AuthMiddlewareAdapter) RequireAuth() gin.HandlerFunc {
 			c.Set("team_id", "")
 			c.Next()
 			return
+		}
+
+		// Share-link bypass: a request carrying a valid unexpired share code
+		// (?share= or X-Share-Code) passes GraphQL reads and web assets even
+		// with auth enabled, so /s/{code} links shared in tickets and Slack
+		// keep working. See internal/api/share_handler.go.
+		if m.shareValidator != nil && IsShareBypassEligible(c.Request.Method, c.Request.URL.Path) {
+			if code := ShareCodeFromRequest(c); code != "" && m.shareValidator.ValidateShareCode(c.Request.Context(), code) {
+				c.Set("user_id", "share-link")
+				c.Set("user_email", "share-link@fern-platform")
+				c.Set("role", "user")
+				c.Set("team_id", "")
+				c.Set("share_code", code)
+				c.Next()
+				return
+			}
 		}
 
 		var sessionID string

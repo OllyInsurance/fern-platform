@@ -281,6 +281,23 @@ type ProjectAccess struct {
 	ExpiresAt *time.Time `json:"expires_at,omitempty"` // Optional expiration
 }
 
+// ShareLink is a short-code alias for a shareable UI path (presigned URL).
+// The code is the credential: anyone holding an unexpired code may follow the
+// /s/{code} redirect and, when auth is enabled, read through the share bypass
+// in the auth middleware. Created via POST /api/v1/share.
+type ShareLink struct {
+	BaseModel
+	Code      string    `gorm:"uniqueIndex;not null;size:64" json:"code"`
+	Path      string    `gorm:"not null" json:"path"`
+	CreatedBy string    `gorm:"size:255;not null;default:''" json:"created_by"`
+	ExpiresAt time.Time `gorm:"index;not null" json:"expires_at"`
+}
+
+// TableName returns the table name for ShareLink
+func (ShareLink) TableName() string {
+	return "share_links"
+}
+
 // UserRole represents possible user roles
 type UserRole string
 
