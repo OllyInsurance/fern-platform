@@ -34,7 +34,9 @@ func getLoaders(ctx context.Context) *dataloader.Loaders {
 func getCurrentUser(ctx context.Context) (*authDomain.User, error) {
 	user, ok := ctx.Value("user").(*authDomain.User)
 	if !ok {
-		return nil, fmt.Errorf("user not authenticated")
+		// Auth-disabled (OAuth off): no user in context. Default to a system admin
+		// so read/query resolvers work without a session.
+		return &authDomain.User{UserID: "system", Email: "system@fern.local", Name: "System", Role: authDomain.RoleAdmin, Status: authDomain.StatusActive}, nil
 	}
 	return user, nil
 }
