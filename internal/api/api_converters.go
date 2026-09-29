@@ -15,19 +15,21 @@ import (
 // Request/Response type definitions
 
 type TestRunRequest struct {
-	ID                uint64     `json:"id"`
-	TestProjectName   string     `json:"test_project_name"`
-	TestProjectID     string     `json:"test_project_id"`
-	TestSeed          uint64     `json:"test_seed"`
-	StartTime         time.Time  `json:"start_time"`
-	EndTime           time.Time  `json:"end_time"`
-	GitBranch         string     `json:"git_branch"`
-	GitSha            string     `json:"git_sha"`
-	BuildTriggerActor string     `json:"build_trigger_actor"`
-	BuildUrl          string     `json:"build_url"`
-	Environment       string     `json:"environment"`
-	Tags              []Tag      `json:"tags"`
-	SuiteRuns         []SuiteRun `json:"suite_runs"`
+	ID                uint64    `json:"id"`
+	TestProjectName   string    `json:"test_project_name"`
+	TestProjectID     string    `json:"test_project_id"`
+	TestSeed          uint64    `json:"test_seed"`
+	StartTime         time.Time `json:"start_time"`
+	EndTime           time.Time `json:"end_time"`
+	GitBranch         string    `json:"git_branch"`
+	GitSha            string    `json:"git_sha"`
+	BuildTriggerActor string    `json:"build_trigger_actor"`
+	BuildUrl          string    `json:"build_url"`
+	Environment       string    `json:"environment"`
+	// Metadata is free-form run provenance (CI run id, lane, job URL, ...).
+	Metadata  map[string]interface{} `json:"metadata"`
+	Tags      []Tag                  `json:"tags"`
+	SuiteRuns []SuiteRun             `json:"suite_runs"`
 }
 
 type SuiteRun struct {
@@ -375,4 +377,34 @@ func FilterTestRunsByUserGroups(ctx context.Context, testRuns []*testingDomain.T
 	}
 
 	return filtered
+}
+
+// runMetadata is the stored run metadata: the request's own map plus the
+// build fields the request carries but the run had nowhere to keep.
+func runMetadata(req *TestRunRequest) map[string]interface{} {
+	md := map[string]interface{}{}
+	for k, v := range req.Metadata {
+		md[k] = v
+	}
+	if req.BuildUrl != "" {
+		md["build_url"] = req.BuildUrl
+	}
+	if req.BuildTriggerActor != "" {
+		md["build_trigger_actor"] = req.BuildTriggerActor
+	}
+	return md
+}
+
+// runTimes is the run's span as the reporter measured it, falling back to
+// the ingest time when the request leaves it out.
+func runTimes(req *TestRunRequest, now time.Time) (start time.Time, end *time.Time, dur time.Duration) {
+	start = now
+	if !req.StartTime.IsZero() {
+		start = req.StartTime
+	}
+	if !req.EndTime.IsZero() && !req.EndTime.Before(start) {
+		e := req.EndTime
+		end, dur = &e, e.Sub(start)
+	}
+	return
 }
