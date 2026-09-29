@@ -281,6 +281,7 @@ type SpecRun struct {
 	ErrorMessage *string    `json:"errorMessage,omitempty"`
 	StackTrace   *string    `json:"stackTrace,omitempty"`
 	VideoURL     *string    `json:"videoUrl,omitempty"`
+	Description  *string    `json:"description,omitempty"`
 	RetryCount   int        `json:"retryCount"`
 	IsFlaky      bool       `json:"isFlaky"`
 	Tags         []*Tag     `json:"tags"`

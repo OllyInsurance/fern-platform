@@ -77,6 +77,8 @@ const QUERIES = {
                         description
                         isActive
                         team
+                        repository
+                        defaultBranch
                         canManage
                         stats {
                             totalTestRuns
@@ -117,6 +119,8 @@ const QUERIES = {
                 runId
                 projectId
                 branch
+                commitSha
+                environment
                 status
                 startTime
                 endTime
@@ -210,6 +214,7 @@ const QUERIES = {
                         endTime
                         errorMessage
                         stackTrace
+                        description
                         videoUrl
                         isFlaky
                         tags {
@@ -318,6 +323,7 @@ const QUERIES = {
                         endTime
                         errorMessage
                         stackTrace
+                        description
                         videoUrl
                         isFlaky
                         tags {

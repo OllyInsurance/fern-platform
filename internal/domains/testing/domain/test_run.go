@@ -62,6 +62,7 @@ type SpecRun struct {
 	FailureMessage string        `json:"failure_message"`
 	StackTrace     string        `json:"stack_trace"`
 	VideoURL       string        `json:"video_url"`
+	Description    string        `json:"description"`
 	RetryCount     int           `json:"retry_count"`
 	IsFlaky        bool          `json:"is_flaky"`
 	Tags           []Tag         `json:"tags"`

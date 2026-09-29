@@ -15,7 +15,7 @@
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone@7.23.10/babel.min.js"></script>
     <script src="https://d3js.org/d3.v7.min.js"></script>
-    <script src="/web/js/graphql-client.js?v=6"></script>
+    <script src="/web/js/graphql-client.js?v=10"></script>
     <script src="/web/js/timestamp-component.js?v=2"></script>
     <script src="/web/js/duration-utils.js?v=1"></script>
     
@@ -113,6 +113,46 @@
             font-size: inherit;
             margin-right: 0;
         }
+    
+        /* ── Status page ─────────────────────────────────── */
+        .fas.fa-traffic-light::before { content: "🎛" !important; }
+        .st-comp { margin-bottom: 2.5rem; }
+        .st-comphead { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+        .st-eyebrow { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .12em; color: var(--text-secondary); }
+        .st-repo { color: var(--text-tertiary); font-size: 12.5px; font-family: ui-monospace, Menlo, monospace; }
+        .st-anchor { margin-left: auto; color: var(--text-secondary); font-size: 12.5px; }
+        .st-anchor code { font-size: 12px; }
+        .st-row { cursor: pointer; }
+        .st-row:hover td { background: var(--bg-secondary); }
+        .st-name { font-weight: 600; font-size: 0.875rem; }
+        .st-name .st-kind { display: block; font-weight: 400; font-size: 0.72rem; color: var(--text-tertiary); }
+        .st-saga td { border-top: 2px solid var(--border-light); background: var(--bg-secondary); }
+        .st-stale { color: var(--warning, #d97706); font-size: 11.5px; font-weight: 600; }
+        .st-cell { display: inline-flex; align-items: center; gap: 7px; font-variant-numeric: tabular-nums; }
+        .st-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; }
+        .st-dot.ok { background: var(--success, #10b981); }
+        .st-dot.bad { background: var(--error, #ef4444); }
+        .st-dot.warn { background: transparent; border: 2px solid var(--warning, #d97706); width: 7px; height: 7px; }
+        .st-scrim { position: fixed; inset: 0; background: rgba(8,12,20,.45); z-index: 40; }
+        .st-panel {
+            position: fixed; top: 0; right: 0; bottom: 0; width: min(520px, 94vw); z-index: 41;
+            background: var(--bg-primary); border-left: 1px solid var(--border-light);
+            box-shadow: -12px 0 34px rgba(0,0,0,.25); display: flex; flex-direction: column;
+        }
+        .st-panel-head { padding: 16px 20px 12px; border-bottom: 1px solid var(--border-light); position: relative; }
+        .st-panel-head .st-crumbs { font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: .07em; margin-bottom: 5px; }
+        .st-panel-head h2 { margin: 0; font-size: 1rem; display: flex; align-items: center; gap: 8px; color: var(--text-primary); }
+        .st-panel-head .st-meta { color: var(--text-secondary); font-size: 12.5px; margin-top: 4px; }
+        .st-panel-body { overflow-y: auto; flex: 1; padding: 12px 20px 24px; }
+        .st-close { position: absolute; top: 12px; right: 12px; border: none; background: var(--bg-tertiary); color: var(--text-secondary); width: 30px; height: 30px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+        .st-suite-h { font-size: 11.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-tertiary); margin: 14px 0 8px; font-weight: 700; }
+        .st-spec { border: 1px solid var(--border-light); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+        .st-spec .st-spec-t { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; font-weight: 600; color: var(--text-primary); }
+        .st-spec .st-desc { margin-top: 7px; font-size: 12px; color: var(--text-secondary); white-space: pre-wrap; font-family: ui-monospace, Menlo, monospace; line-height: 1.55; max-height: 200px; overflow-y: auto; }
+        .st-spec .st-err { margin-top: 7px; font-size: 12px; color: var(--error); white-space: pre-wrap; font-family: ui-monospace, Menlo, monospace; }
+        .st-spec video { margin-top: 8px; max-width: 100%; border-radius: 8px; border: 1px solid var(--border-light); background: #000; display: block; }
+        .st-open { display: inline-block; margin-top: 10px; font-size: 13px; color: var(--primary); font-weight: 600; cursor: pointer; background: none; border: none; padding: 0; }
+
     </style>
     
     <style>
@@ -1608,11 +1648,19 @@
 
         // Fern video proof points (patch 0002): inline per-spec video player.
         // Only embeds CDN-prefixed URLs — fern's ingest is public + tokenless.
-        const FERN_VIDEO_CDN_PREFIX = 'https://cdn.dev.hiolly.com/';
+        // Clips are served from more than one host: dev-1's assets CDN for runs
+        // made inside the VPC, and GCS for CI runs, which have no route into it.
+        // This was a single hardcoded prefix, so every GCS-hosted clip silently
+        // rendered as '—' with the URL present and correct in the payload.
+        const FERN_VIDEO_CDN_PREFIXES = [
+            'https://cdn.dev.hiolly.com/',
+            'https://storage.googleapis.com/',
+        ];
+        const isAllowedVideo = (u) => !!u && FERN_VIDEO_CDN_PREFIXES.some((p) => u.startsWith(p));
         const VideoCell = ({ url }) => {
             const [failed, setFailed] = useState(false);
             const muted = { color: 'var(--text-tertiary)', fontSize: '0.875rem' };
-            if (!url || !url.startsWith(FERN_VIDEO_CDN_PREFIX)) return <span style={muted}>—</span>;
+            if (!isAllowedVideo(url)) return <span style={muted}>—</span>;
             if (failed) return <span style={muted}>video unavailable</span>;
             return <video controls preload="none" src={url} onError={() => setFailed(true)}
                 style={{maxWidth: '240px', maxHeight: '150px', borderRadius: 'var(--radius-md)', display: 'block'}} />;
@@ -2687,7 +2735,8 @@
             const navItems = [
                 { path: '/', label: 'Dashboard', icon: 'fas fa-chart-line', fallback: '📊' },
                 { path: '/test-summaries', label: 'Test Summaries', icon: 'fas fa-chart-pie', fallback: '📈' },
-                { path: '/test-runs', label: 'Test Runs', icon: 'fas fa-list-alt', fallback: '📋' }
+                { path: '/test-runs', label: 'Test Runs', icon: 'fas fa-list-alt', fallback: '📋' },
+                { path: '/status', label: 'Status', icon: 'fas fa-traffic-light', fallback: '🎛' }
             ];
             
             // Add Manager Dashboard for managers AND admins
@@ -4726,6 +4775,186 @@
             );
         }
 
+
+        // ── Status: commit-anchored latest state per component ──────────────
+        // Buckets suites by project.repository (App / Backend / Other) and
+        // shows each suite's LATEST run, marked stale when it belongs to an
+        // older sha than the component's newest. Rows drill into a slide-over
+        // with the run's suites, specs, descriptions, errors and clips — the
+        // same data the forensic pages render; this is just a better front
+        // door. platform-e2e is pinned last in Backend as the SAGAS row.
+        function StatusPage() {
+            const { navigate } = useRouter();
+            const [runs, setRuns] = useState([]);
+            const [projects, setProjects] = useState([]);
+            const [loading, setLoading] = useState(true);
+            const [error, setError] = useState(null);
+            const [panel, setPanel] = useState(null);
+
+            useEffect(() => {
+                Promise.all([
+                    graphqlClient.query(GRAPHQL_QUERIES.GET_RECENT_TEST_RUNS_SUMMARY, { limit: 200 }),
+                    graphqlClient.query(GRAPHQL_QUERIES.GET_PROJECTS_LIST, { first: 100 })
+                ]).then(([runsData, projectsData]) => {
+                    setRuns(runsData?.recentTestRuns || []);
+                    setProjects((projectsData?.projects?.edges || []).map((e) => e.node));
+                    setLoading(false);
+                }).catch((err) => { setError(String(err?.message || err)); setLoading(false); });
+            }, []);
+
+            useEffect(() => {
+                const onKey = (e) => { if (e.key === 'Escape') setPanel(null); };
+                window.addEventListener('keydown', onKey);
+                return () => window.removeEventListener('keydown', onKey);
+            }, []);
+
+            const openRun = async (row) => {
+                setPanel({ loading: true, row });
+                try {
+                    const d = await graphqlClient.query(GRAPHQL_QUERIES.GET_TEST_RUN_DETAILS, { runId: row.run.runId });
+                    setPanel({ loading: false, row, data: d?.testRunByRunId });
+                } catch (e) {
+                    setPanel({ loading: false, row, error: String(e?.message || e) });
+                }
+            };
+
+            if (loading) return <div className="container fade-in"><div className="loading-spinner"></div></div>;
+            if (error) return <div className="container fade-in"><div className="empty-state"><h3>Could not load status</h3><p>{error}</p></div></div>;
+
+            const projByPid = {};
+            projects.forEach((pr) => { projByPid[pr.projectId] = pr; });
+            const latest = new Map();
+            runs.forEach((r) => { if (!latest.has(r.projectId)) latest.set(r.projectId, r); });
+
+            const bucketOf = (repo) => {
+                if (!repo) return 'Other';
+                if (/\/app\/?$/.test(repo)) return 'App';
+                if (/\/olly\/?$/.test(repo)) return 'Backend';
+                return 'Other';
+            };
+            const buckets = { App: [], Backend: [], Other: [] };
+            latest.forEach((run, pid) => {
+                const proj = projByPid[pid];
+                buckets[bucketOf(proj && proj.repository)].push({
+                    pid, run,
+                    name: (proj && proj.name) || pid,
+                    repo: (proj && proj.repository) || '',
+                    defaultBranch: (proj && proj.defaultBranch) || 'main',
+                    saga: pid === 'olly-platform-e2e'
+                });
+            });
+            Object.keys(buckets).forEach((k) => buckets[k].sort((a, b) =>
+                (a.saga ? 1 : 0) - (b.saga ? 1 : 0) || a.name.localeCompare(b.name)));
+
+            const took = (r) => {
+                if (r.duration > 0) return window.formatDuration(r.duration);
+                const ms = new Date(r.endTime) - new Date(r.startTime);
+                return ms > 0 && ms < 86400000 ? window.formatDuration(ms) : '—';
+            };
+            const sha7 = (x) => (x || '').slice(0, 7);
+
+            const section = (label, repoLabel, rows) => {
+                if (!rows.length) return null;
+                // The anchor is the component's newest run ON ITS DEFAULT BRANCH
+                // (per-project config in Fern). A PR run may be newer, but it
+                // answers a different question — it shows as a badged row and
+                // never anchors, so it cannot mark main's runs stale.
+                const defRuns = rows.filter((x) => x.run.branch === x.defaultBranch);
+                const anchor = (defRuns.length ? defRuns : rows).reduce((a, b) =>
+                    new Date(b.run.startTime) > new Date(a.run.startTime) ? b : a).run;
+                return (
+                    <div className="st-comp" key={label}>
+                        <div className="st-comphead">
+                            <span className="st-eyebrow">{label}</span>
+                            <span className="st-repo">{repoLabel}</span>
+                            <span className="st-anchor">newest on <code>{anchor.branch || 'main'}</code>: <code>{sha7(anchor.commitSha) || '—'}</code> · <Timestamp timestamp={anchor.startTime} /></span>
+                        </div>
+                        <div className="table-container">
+                            <table>
+                                <thead><tr>
+                                    <th>Suite</th><th>Result</th><th>Status</th><th>Commit</th><th>Started</th><th>Took</th>
+                                </tr></thead>
+                                <tbody>
+                                    {rows.map((row) => {
+                                        const r = row.run;
+                                        const isDefault = r.branch === row.defaultBranch;
+                                        const stale = isDefault && r.commitSha && anchor.commitSha && r.commitSha !== anchor.commitSha;
+                                        const dot = r.status === 'passed' ? 'ok' : r.status === 'failed' ? 'bad' : 'warn';
+                                        return (
+                                            <tr key={row.pid} className={'st-row' + (row.saga ? ' st-saga' : '')} onClick={() => openRun(row)}>
+                                                <td className="st-name">{row.saga ? 'SAGAS · ' + row.name : row.name}
+                                                    <span className="st-kind">{row.pid}</span></td>
+                                                <td><span className="st-cell"><span className={'st-dot ' + (stale ? 'warn' : dot)}></span>
+                                                    <span>{r.passedTests || 0}/{r.totalTests || 0}</span></span></td>
+                                                <td><span className={'status ' + (r.status === 'passed' ? 'healthy' : r.status === 'failed' ? 'error' : 'warning')}>{r.status}</span>
+                                                    {stale && <div className="st-stale">stale — from {sha7(r.commitSha)}</div>}
+                                                    {!isDefault && <div className="st-stale">PR branch — no {row.defaultBranch} run yet</div>}</td>
+                                                <td><code style={{fontSize: '0.72rem'}}>{sha7(r.commitSha) || '—'}</code>
+                                                    <div style={{fontSize: '0.7rem', color: 'var(--text-tertiary)'}}>{r.branch || ''}</div></td>
+                                                <td style={{fontSize: '0.8rem', color: 'var(--text-secondary)'}}><Timestamp timestamp={r.startTime} /></td>
+                                                <td style={{fontSize: '0.8rem'}}>{took(r)}</td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                );
+            };
+
+            const drill = panel && (
+                <React.Fragment>
+                    <div className="st-scrim" onClick={() => setPanel(null)}></div>
+                    <aside className="st-panel" role="dialog" aria-modal="true">
+                        <div className="st-panel-head">
+                            <div className="st-crumbs">{panel.row.name} · {panel.row.run.runId}</div>
+                            <h2><span className={'st-dot ' + (panel.row.run.status === 'passed' ? 'ok' : 'bad')}></span>
+                                {panel.row.run.passedTests || 0}/{panel.row.run.totalTests || 0} passed</h2>
+                            <div className="st-meta">{panel.row.run.branch || ''} @ {sha7(panel.row.run.commitSha) || '—'} · {panel.row.run.environment || 'default'}</div>
+                            <button className="st-close" onClick={() => setPanel(null)} aria-label="Close">✕</button>
+                        </div>
+                        <div className="st-panel-body">
+                            {panel.loading && <div className="loading-spinner"></div>}
+                            {panel.error && <p style={{color: 'var(--error)'}}>{panel.error}</p>}
+                            {panel.data && (panel.data.suiteRuns || []).map((su, i) => (
+                                <div key={i}>
+                                    <div className="st-suite-h">{su.suiteName} — {(su.specRuns || []).length} specs</div>
+                                    {(su.specRuns || []).map((sp, j) => (
+                                        <div className="st-spec" key={j}>
+                                            <div className="st-spec-t">
+                                                <span className={'st-dot ' + (sp.status === 'passed' ? 'ok' : sp.status === 'failed' ? 'bad' : 'warn')} style={{marginTop: '4px'}}></span>
+                                                <span>{sp.specName}</span>
+                                            </div>
+                                            {sp.description && <div className="st-desc">{sp.description}</div>}
+                                            {sp.errorMessage && sp.status === 'failed' && <div className="st-err">{sp.errorMessage}</div>}
+                                            {isAllowedVideo(sp.videoUrl) && <video controls preload="none" src={sp.videoUrl}></video>}
+                                        </div>
+                                    ))}
+                                </div>
+                            ))}
+                            {panel.data && <button className="st-open" onClick={() => { setPanel(null); navigate('/test-runs/' + panel.row.run.runId); }}>Open full run page →</button>}
+                        </div>
+                    </aside>
+                </React.Fragment>
+            );
+
+            return (
+                <div className="container fade-in">
+                    <h2 style={{marginBottom: '0.5rem', color: 'var(--text-primary)', fontSize: '2rem', fontWeight: '700', letterSpacing: '-0.025em'}}>
+                        <i className="fas fa-traffic-light" style={{marginRight: '0.75rem'}}></i>Status
+                    </h2>
+                    <p style={{color: 'var(--text-tertiary)', fontSize: '0.85rem', marginBottom: '1.75rem'}}>
+                        Each suite's latest run. A row goes stale when its result belongs to an older commit than its component's newest — click any row for the specs, and their clips.
+                    </p>
+                    {section('App', 'OllyInsurance/app', buckets.App)}
+                    {section('Backend', 'OllyInsurance/olly', buckets.Backend)}
+                    {section('Other', 'unbucketed projects', buckets.Other)}
+                    {drill}
+                </div>
+            );
+        }
+
         // Enhanced Test Runs component with drill-down functionality
         function TestRuns() {
             const [testRuns, setTestRuns] = useState([]);
@@ -4737,6 +4966,9 @@
             const [loading, setLoading] = useState(true);
             const [error, setError] = useState(null);
             const [view, setView] = useState('runs'); // 'runs', 'suites', 'specs'
+            // Runs-list controls. Kept in component state (not the hash) so
+            // the existing #/test-runs/<runId> deep-link parser stays untouched.
+            const [runFilter, setRunFilter] = useState({ q: '', project: 'all', status: 'all', group: 'none', latestOnly: false });
             const { route, navigate } = useRouter();
 
             useEffect(() => {
@@ -4958,6 +5190,7 @@
                             duration_ms: specRun.duration,
                             error_message: specRun.errorMessage || null,
                             video_url: specRun.videoUrl || null,
+                            description: specRun.description || null,
                             stack_trace: specRun.stackTrace || null,
                             suite_id: suite.id,
                             started_at: specRun.startTime,
@@ -5099,12 +5332,114 @@
 
             // Test Runs List View
             if (view === 'runs') {
+                // recentTestRuns arrives newest-first; every computation below
+                // relies on that ordering (latest per project = first seen).
+                const f = runFilter;
+                const runMatches = (r) => {
+                    if (f.project !== 'all' && r.projectId !== f.project) return false;
+                    if (f.status !== 'all' && r.status !== f.status) return false;
+                    if (f.q) {
+                        const hay = [r.runId, r.branch, r.commitSha, r.projectId, r.environment,
+                            ...(r.tags || []).map((t) => t.name)].filter(Boolean).join(' ').toLowerCase();
+                        if (!hay.includes(f.q.toLowerCase())) return false;
+                    }
+                    return true;
+                };
+                let visibleRuns = testRuns.filter(runMatches);
+                if (f.latestOnly) {
+                    const seen = new Set();
+                    visibleRuns = visibleRuns.filter((r) => !seen.has(r.projectId) && seen.add(r.projectId));
+                }
+                let runGroups;
+                if (f.group === 'commit') {
+                    const m = new Map();
+                    for (const r of visibleRuns) {
+                        const key = `${r.commitSha || 'unknown'} @ ${r.branch || '—'}`;
+                        if (!m.has(key)) m.set(key, []);
+                        m.get(key).push(r);
+                    }
+                    runGroups = [...m.entries()].map(([key, runs]) => ({ key, header: key, runs }));
+                } else if (f.group === 'project') {
+                    const m = new Map();
+                    for (const r of visibleRuns) {
+                        const key = r.projectName || r.projectId;
+                        if (!m.has(key)) m.set(key, []);
+                        m.get(key).push(r);
+                    }
+                    runGroups = [...m.entries()].map(([key, runs]) => ({ key, header: key, runs }));
+                } else if (f.group === 'tag') {
+                    // A run appears under each of its tags; run-id tags (jrun-*,
+                    // maestro-*) are per-run by construction and would make one
+                    // group per row, so they are skipped.
+                    const m = new Map();
+                    for (const r of visibleRuns) {
+                        const names = (r.tags || []).map((t) => t.name)
+                            .filter((n) => n && !/^(jrun-|maestro-|pr-|skill-test-|collision-fix)/.test(n));
+                        for (const n of (names.length ? names : ['untagged'])) {
+                            if (!m.has(n)) m.set(n, []);
+                            m.get(n).push(r);
+                        }
+                    }
+                    runGroups = [...m.entries()].sort((a, b) => b[1].length - a[1].length)
+                        .map(([key, runs]) => ({ key, header: `#${key}`, runs }));
+                } else {
+                    runGroups = [{ key: 'all', header: null, runs: visibleRuns }];
+                }
+                const latestByProject = (() => {
+                    const m = new Map();
+                    for (const r of testRuns) if (!m.has(r.projectId)) m.set(r.projectId, r);
+                    return [...m.values()];
+                })();
+                const projectOptions = [...new Set(testRuns.map((r) => r.projectId))].sort();
+                const ctrl = { padding: '0.5rem 0.75rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-light)', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.875rem' };
                 return (
                     <div className="container fade-in">
                         <h2 style={{marginBottom: '2rem', color: 'var(--text-primary)', fontSize: '2rem', fontWeight: '700', letterSpacing: '-0.025em'}}>
                             <i className="fas fa-list-alt" style={{marginRight: '0.75rem', color: 'var(--primary)'}}></i>
                             Test Runs
                         </h2>
+                        {/* Latest run per project — the "is it green right now?" strip */}
+                        {latestByProject.length > 0 && (
+                            <div style={{display: 'flex', flexWrap: 'wrap', gap: '0.75rem', marginBottom: '1.5rem'}}>
+                                {latestByProject.map((r) => (
+                                    <div key={r.projectId} onClick={() => navigate('/test-runs/' + r.runId)}
+                                        style={{cursor: 'pointer', padding: '0.75rem 1rem', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-light)', background: 'var(--bg-secondary)', minWidth: '180px'}}>
+                                        <div style={{fontSize: '0.8125rem', fontWeight: '600', marginBottom: '0.35rem', color: 'var(--text-primary)'}}>{r.projectName || r.projectId}</div>
+                                        <div style={{display: 'flex', alignItems: 'center', gap: '0.5rem'}}>
+                                            <span className={`status ${r.status === 'passed' ? 'healthy' : r.status === 'failed' ? 'error' : 'warning'}`}>{r.status}</span>
+                                            <span style={{fontSize: '0.75rem', color: 'var(--text-tertiary)'}}><Timestamp timestamp={r.startTime} /></span>
+                                        </div>
+                                        <div style={{fontSize: '0.75rem', color: 'var(--text-tertiary)', marginTop: '0.35rem'}}>{r.passedTests || 0}/{r.totalTests || 0} passed · latest</div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {/* Filter + group toolbar (client-side over the fetched window) */}
+                        <div style={{display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'center', marginBottom: '1.25rem'}}>
+                            <input style={{...ctrl, minWidth: '220px'}} placeholder="Filter: run id, branch, commit, tag…"
+                                value={f.q} onChange={(e) => setRunFilter({ ...f, q: e.target.value })} />
+                            <select style={ctrl} value={f.project} onChange={(e) => setRunFilter({ ...f, project: e.target.value })}>
+                                <option value="all">All projects</option>
+                                {projectOptions.map((pid) => <option key={pid} value={pid}>{pid}</option>)}
+                            </select>
+                            <select style={ctrl} value={f.status} onChange={(e) => setRunFilter({ ...f, status: e.target.value })}>
+                                <option value="all">Any status</option>
+                                <option value="passed">passed</option>
+                                <option value="failed">failed</option>
+                            </select>
+                            <select style={ctrl} value={f.group} onChange={(e) => setRunFilter({ ...f, group: e.target.value })}>
+                                <option value="none">No grouping</option>
+                                <option value="commit">Group by commit</option>
+                                <option value="project">Group by project</option>
+                                <option value="tag">Group by tag</option>
+                            </select>
+                            <label style={{display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.875rem', color: 'var(--text-secondary)', cursor: 'pointer'}}>
+                                <input type="checkbox" checked={f.latestOnly} onChange={(e) => setRunFilter({ ...f, latestOnly: e.target.checked })} />
+                                Latest per project
+                            </label>
+                            <span style={{fontSize: '0.8125rem', color: 'var(--text-tertiary)'}}>{visibleRuns.length} of {testRuns.length} runs</span>
+                        </div>
                         
                         {testRuns.length > 0 ? (
                             <div className="table-container">
@@ -5121,7 +5456,17 @@
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {testRuns.map((run) => (
+                                        {runGroups.map((grp) => (
+                                        <React.Fragment key={grp.key}>
+                                        {grp.header && (
+                                            <tr>
+                                                <td colSpan={7} style={{background: 'var(--bg-secondary)', fontWeight: '700', fontSize: '0.8125rem', color: 'var(--text-secondary)', padding: '0.5rem 1rem'}}>
+                                                    <code style={{fontSize: '0.8125rem'}}>{grp.header}</code>
+                                                    <span style={{fontWeight: '500', color: 'var(--text-tertiary)'}}> · {grp.runs.length} run{grp.runs.length === 1 ? '' : 's'}</span>
+                                                </td>
+                                            </tr>
+                                        )}
+                                        {grp.runs.map((run) => (
                                             <tr key={run.id} 
                                                 onClick={() => navigate('/test-runs/' + run.runId)}
                                                 style={{cursor: 'pointer'}}
@@ -5144,6 +5489,9 @@
                                                         <i className="fas fa-code-branch" style={{fontSize: '0.75rem', color: 'var(--text-tertiary)'}}></i>
                                                         {run.branch || 'main'}
                                                     </span>
+                                                    {run.commitSha && (
+                                                        <code style={{fontSize: '0.7rem', color: 'var(--text-tertiary)'}}>{String(run.commitSha).slice(0, 8)}</code>
+                                                    )}
                                                 </td>
                                                 <td>
                                                     <div style={{display: 'flex', gap: '0.75rem', alignItems: 'center', fontSize: '0.875rem', fontWeight: '500'}}>
@@ -5156,7 +5504,7 @@
                                                     </div>
                                                 </td>
                                                 <td>
-                                                    <span className={`status ${run.status === 'completed' ? 'healthy' : 'active'}`}>
+                                                    <span className={`status ${run.status === 'passed' ? 'healthy' : run.status === 'failed' ? 'error' : 'warning'}`}>
                                                         {run.status}
                                                     </span>
                                                 </td>
@@ -5208,6 +5556,8 @@
                                                 </td>
                                                 <td style={{fontWeight: '500', color: 'var(--text-secondary)'}}><Timestamp timestamp={run.startTime} /></td>
                                             </tr>
+                                        ))}
+                                        </React.Fragment>
                                         ))}
                                     </tbody>
                                 </table>
@@ -5379,6 +5729,7 @@
                                 <thead>
                                     <tr>
                                         <th>Test Name</th>
+                                        <th>What it does</th>
                                         <th>Status</th>
                                         <th>Duration</th>
                                         <th>Error Message</th>
@@ -5392,6 +5743,15 @@
                                         <tr key={spec.id} style={{cursor: 'pointer'}} onClick={() => navigate('/test-runs/' + selectedRun.runId + '/' + encodeURIComponent(selectedSuite.name) + '/' + encodeURIComponent(spec.name))}>
                                             <td>
                                                 <div style={{fontWeight: '600', fontSize: '0.875rem'}}>{spec.name}</div>
+                                            </td>
+                                            <td>
+                                                {spec.description ? (
+                                                    <div title={spec.description} style={{fontSize: "0.8125rem", color: "var(--text-secondary)", maxWidth: "320px", whiteSpace: "pre-line", display: "-webkit-box", WebkitLineClamp: 4, WebkitBoxOrient: "vertical", overflow: "hidden"}}>
+                                                        {spec.description}
+                                                    </div>
+                                                ) : (
+                                                    <span style={{color: "var(--text-tertiary)", fontSize: "0.875rem"}}>-</span>
+                                                )}
                                             </td>
                                             <td>
                                                 <span className={`status ${spec.status === 'passed' ? 'healthy' : spec.status === 'failed' ? 'error' : 'warning'}`}>
@@ -5450,7 +5810,7 @@
             if (view === 'spec') {
                 const sp = selectedSpec || {};
                 const statusClass = sp.status === 'passed' ? 'healthy' : sp.status === 'failed' ? 'error' : 'warning';
-                const hasVideo = sp.video_url && sp.video_url.startsWith(FERN_VIDEO_CDN_PREFIX);
+                const hasVideo = isAllowedVideo(sp.video_url);
                 return (
                     <div className="container fade-in">
                         {renderBreadcrumb()}
@@ -5478,6 +5838,14 @@
                                 </div>
                             )}
                         </div>
+                        {sp.description && (
+                            <div style={{marginBottom: '1.5rem'}}>
+                                <h3 style={{fontSize: '0.9rem', fontWeight: '700', color: 'var(--text-secondary)', marginBottom: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em'}}>
+                                    <i className="fas fa-list-check" style={{marginRight: '0.5rem', color: 'var(--primary)'}}></i>What it does
+                                </h3>
+                                <pre style={{fontSize: '0.85rem', background: 'var(--bg-secondary)', padding: '1rem', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-light)', color: 'var(--text-secondary)', overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, lineHeight: '1.6'}}>{sp.description}</pre>
+                            </div>
+                        )}
                         <div style={{marginBottom: '1.5rem'}}>
                             <h3 style={{fontSize: '0.9rem', fontWeight: '700', color: 'var(--text-secondary)', marginBottom: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em'}}>
                                 <i className="fas fa-video" style={{marginRight: '0.5rem', color: 'var(--primary)'}}></i>Video Proof
@@ -5732,7 +6100,7 @@
                                                 {projectRuns.length} total runs
                                             </p>
                                         </div>
-                                        <span className={`status ${latestRun?.status === 'completed' ? 'healthy' : 'active'}`}>
+                                        <span className={`status ${latestRun?.status === 'passed' ? 'healthy' : latestRun?.status === 'failed' ? 'error' : 'warning'}`}>
                                             {latestRun?.status || 'No runs'}
                                         </span>
                                     </div>
@@ -9537,6 +9905,10 @@
                     return <ProjectSettings />;
                 }
                 
+                if (route === '/status') {
+                    return <StatusPage />;
+                }
+
                 if (route === '/test-runs' || route.startsWith('/test-runs/')) {
                     return <TestRuns />;
                 }

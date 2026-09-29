@@ -96,6 +96,7 @@ func (c *DatabaseConverter) ConvertDomainSpecRunsToDatabase(domainSpecRuns []*do
 			ErrorMessage: errorMessage,                                  // Combine ErrorMessage and FailureMessage
 			StackTrace:   domainSpec.StackTrace,
 			VideoURL:     domainSpec.VideoURL,
+			Description:  domainSpec.Description,
 			RetryCount:   domainSpec.RetryCount,
 			IsFlaky:      domainSpec.IsFlaky,
 			Tags:         dbTags,
@@ -197,6 +198,7 @@ func (c *DatabaseConverter) ConvertSpecRunToDomain(dbSpec *database.SpecRun) *do
 		FailureMessage: "", // Not in database model
 		StackTrace:     dbSpec.StackTrace,
 		VideoURL:       dbSpec.VideoURL,
+		Description:    dbSpec.Description,
 		RetryCount:     dbSpec.RetryCount,
 		IsFlaky:        dbSpec.IsFlaky,
 		Tags:           tags,

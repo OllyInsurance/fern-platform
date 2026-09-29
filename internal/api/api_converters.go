@@ -51,6 +51,7 @@ type SpecRun struct {
 	Tags            []Tag     `json:"tags"`
 	RetryCount      int       `json:"retry_count"`
 	VideoURL        string    `json:"video_url"`
+	Description     string    `json:"description"`
 }
 
 type Tag struct {
@@ -213,6 +214,7 @@ func ConvertSpecRuns(reqSpecRuns []SpecRun) []*testingDomain.SpecRun {
 			IsFlaky:        false, // Set based on your requirements
 			Tags:           domainTags,
 			VideoURL:       reqSpec.VideoURL,
+			Description:    reqSpec.Description,
 		}
 	}
 
