@@ -581,15 +581,18 @@ func (h *TestRunHandler) recordTestRun(c *gin.Context) {
 
 	if testRun == nil {
 		// brand new run
+		start, end, dur := runTimes(&req, time.Now())
 		newTestRun := &domain.TestRun{
 			RunID:        runID,
 			ProjectID:    req.TestProjectID,
 			Branch:       req.GitBranch,
 			GitCommit:    req.GitSha,
 			Environment:  environment,
-			Metadata:     map[string]interface{}{},
+			Metadata:     runMetadata(&req),
 			Status:       status,
-			StartTime:    time.Now(),
+			StartTime:    start,
+			EndTime:      end,
+			Duration:     dur,
 			Tags:         runLevelTags,
 			SuiteRuns:    domainSuiteRuns,
 			TotalTests:   totalTests,
