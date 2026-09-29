@@ -352,9 +352,9 @@ func TestConvertTagToGraphQL(t *testing.T) {
 	now := time.Now()
 
 	tests := []struct {
-		name     string
+		name      string
 		domainTag *tagsDomain.Tag
-		validate func(t *testing.T, result *model.Tag)
+		validate  func(t *testing.T, result *model.Tag)
 	}{
 		{
 			name: "tag with category and value",
@@ -1469,9 +1469,9 @@ func TestRecentTestRuns_domain(t *testing.T) {
 
 		// Admin context: bypasses the per-project team check (no project service mock needed).
 		adminCtx := context.WithValue(context.Background(), "user", &authDomain.User{
-			UserID:  "admin-1",
-			Role:    authDomain.RoleAdmin,
-			Groups:  []authDomain.UserGroup{},
+			UserID: "admin-1",
+			Role:   authDomain.RoleAdmin,
+			Groups: []authDomain.UserGroup{},
 		})
 		result, err := queryResolver.RecentTestRuns_domain(adminCtx, &projectID, nil)
 
@@ -1545,7 +1545,7 @@ func TestRecentTestRuns_domain(t *testing.T) {
 		projectID := "proj-1"
 		limit := 50 // Simulates lazy-loading scenario where UI fetches 50 runs for a specific project
 		testRuns := make([]*testingDomain.TestRun, 20)
-		
+
 		// Create 20 test runs for the project
 		for i := 0; i < 20; i++ {
 			testRuns[i] = &testingDomain.TestRun{
@@ -1569,9 +1569,9 @@ func TestRecentTestRuns_domain(t *testing.T) {
 		queryResolver := &queryResolver{resolver}
 
 		adminCtx := context.WithValue(context.Background(), "user", &authDomain.User{
-			UserID:  "admin",
-			Role:    authDomain.RoleAdmin,
-			Groups:  []authDomain.UserGroup{},
+			UserID: "admin",
+			Role:   authDomain.RoleAdmin,
+			Groups: []authDomain.UserGroup{},
 		})
 		result, err := queryResolver.RecentTestRuns_domain(adminCtx, &projectID, &limit)
 
@@ -1589,7 +1589,6 @@ func TestRecentTestRuns_domain(t *testing.T) {
 		mockRepo.AssertExpectations(t)
 	})
 }
-
 
 // Test GetProject_domain
 func TestGetProject_domain(t *testing.T) {
@@ -1947,4 +1946,16 @@ func intPtr(i int) *int {
 
 func timePtr(t time.Time) *time.Time {
 	return &t
+}
+
+func TestConvertTestRunToGraphQL_Metadata(t *testing.T) {
+	resolver := setupTestResolver(t)
+	run := &testingDomain.TestRun{
+		ID: 1, RunID: "r", ProjectID: "p", StartTime: time.Now(),
+		Metadata: map[string]interface{}{"ci_run_id": "36547969654", "lane": "e2e"},
+	}
+	got := resolver.convertTestRunToGraphQL(run)
+	require.NotNil(t, got.Metadata, "run metadata must reach GraphQL (the CI view groups by ci_run_id and labels by lane)")
+	assert.Equal(t, "36547969654", got.Metadata["ci_run_id"])
+	assert.Equal(t, "e2e", got.Metadata["lane"])
 }

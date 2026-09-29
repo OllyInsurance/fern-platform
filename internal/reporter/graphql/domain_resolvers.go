@@ -152,6 +152,7 @@ func (r *Resolver) ConvertTestRunToGraphQL(testRun *testingDomain.TestRun) *mode
 		SkippedTests: testRun.SkippedTests,
 		Duration:     int(testRun.Duration.Milliseconds()),
 		Environment:  convertStringPtr(testRun.Environment),
+		Metadata:     testRun.Metadata,
 		Tags:         tags,
 		SuiteRuns:    suiteRuns,
 		CreatedAt:    testRun.StartTime, // Use StartTime as CreatedAt
