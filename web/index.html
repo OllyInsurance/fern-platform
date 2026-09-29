@@ -114,8 +114,29 @@
             margin-right: 0;
         }
     
+
+        /* ── CI timeline ─────────────────────────────────── */
+        .ci-timeline { display: flex; flex-direction: column; gap: 14px; }
+        .ci-runs { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; }
+        .ci-run { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--border-light); background: var(--bg-primary); color: var(--text-primary); padding: 6px 10px; border-radius: 8px; cursor: pointer; white-space: nowrap; font-size: 12.5px; }
+        .ci-run.active { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
+        .ci-sha, .ci-num { font-family: ui-monospace, Menlo, monospace; }
+        .ci-when, .ci-where, .ci-meta { color: var(--text-tertiary); font-size: 12px; }
+        .ci-wall { font-variant-numeric: tabular-nums; font-weight: 600; }
+        .ci-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+        .ci-dot.ok { background: var(--success, #10b981); } .ci-dot.bad { background: var(--error, #ef4444); }
+        .ci-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+        .ci-head h2 { margin: 0; font-size: 1.05rem; }
+        .ci-link { font-size: 12.5px; }
+        .ci-toggle { margin-left: auto; font-size: 12.5px; color: var(--text-secondary); }
+        .ci-chart { border: 1px solid var(--border-light); border-radius: 10px; background: var(--bg-primary); overflow-x: auto; }
+        .ci-sub { margin: 4px 0 0; font-size: 0.95rem; }
+        .ci-slow { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+        .ci-slow td { padding: 5px 8px; border-bottom: 1px solid var(--border-light); }
+        .ci-slow tr { cursor: pointer; } .ci-slow tr:hover td { background: var(--bg-secondary); }
         /* ── Status page ─────────────────────────────────── */
         .fas.fa-traffic-light::before { content: "🎛" !important; }
+        .fas.fa-stream::before { content: "⏱" !important; }
         .st-comp { margin-bottom: 2.5rem; }
         .st-comphead { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
         .st-eyebrow { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .12em; color: var(--text-secondary); }
@@ -2736,7 +2757,8 @@
                 { path: '/', label: 'Dashboard', icon: 'fas fa-chart-line', fallback: '📊' },
                 { path: '/test-summaries', label: 'Test Summaries', icon: 'fas fa-chart-pie', fallback: '📈' },
                 { path: '/test-runs', label: 'Test Runs', icon: 'fas fa-list-alt', fallback: '📋' },
-                { path: '/status', label: 'Status', icon: 'fas fa-traffic-light', fallback: '🎛' }
+                { path: '/status', label: 'Status', icon: 'fas fa-traffic-light', fallback: '🎛' },
+                { path: '/ci', label: 'CI Timeline', icon: 'fas fa-stream', fallback: '⏱' }
             ];
             
             // Add Manager Dashboard for managers AND admins
@@ -4956,6 +4978,160 @@
         }
 
         // Enhanced Test Runs component with drill-down functionality
+        // ── CI timeline ─────────────────────────────────────────────────
+        // One CI run (metadata.ci_run_id, else the commit) drawn on one clock:
+        // a band per Fern run (lane), a row per suite (worker / package), a
+        // bar per test from its real start to end. #/ci/<key> deep-links a run.
+        const CI_RECENT = `query CiRecent($limit: Int) { recentTestRuns(limit: $limit) {
+            id projectId commitSha branch status startTime endTime metadata totalTests failedTests } }`;
+        const CI_RUN = `query CiRun($id: ID!) { testRun(id: $id) { id projectId status startTime endTime metadata
+            suiteRuns { suiteName status startTime endTime specRuns { specName status startTime endTime duration } } } }`;
+
+        const ciKey = (r) => (r.metadata && r.metadata.ci_run_id) ? `run-${r.metadata.ci_run_id}` : `commit-${r.commitSha || 'unknown'}`;
+        const ciMs = (t) => (t ? new Date(t).getTime() : NaN);
+        const ciDur = (ms) => { if (!isFinite(ms)) return '–'; const s = Math.round(ms / 1000); return s >= 60 ? `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s` : `${s}s`; };
+        const ciColor = (st) => st === 'failed' ? 'var(--error, #ef4444)' : st === 'skipped' ? 'var(--text-tertiary, #9ca3af)' : 'var(--success, #10b981)';
+
+        function CITimeline() {
+            const { navigate } = useRouter();
+            const [runs, setRuns] = useState([]);
+            const [loading, setLoading] = useState(true);
+            const [error, setError] = useState(null);
+            const [detail, setDetail] = useState({});
+            const [showSub, setShowSub] = useState(false);
+            const [open, setOpen] = useState({}); // lane id -> expanded (default: lanes of a minute or more)
+            const hash = window.location.hash.slice(1);
+            const selected = hash.startsWith('/ci/') ? decodeURIComponent(hash.slice(4)) : null;
+
+            useEffect(() => {
+                graphqlClient.query(CI_RECENT, { limit: 400 })
+                    .then((d) => setRuns((d && d.recentTestRuns) || []))
+                    .catch((e) => setError(e.message || String(e)))
+                    .finally(() => setLoading(false));
+            }, []);
+
+            const groups = useMemo(() => {
+                const m = new Map();
+                runs.filter((r) => r.branch === 'main' || (r.metadata && r.metadata.ci_run_id)).forEach((r) => {
+                    const k = ciKey(r); if (!m.has(k)) m.set(k, []); m.get(k).push(r);
+                });
+                return [...m.entries()].map(([key, rs]) => {
+                    const start = Math.min(...rs.map((r) => ciMs(r.startTime)));
+                    const end = Math.max(...rs.map((r) => ciMs(r.endTime) || ciMs(r.startTime)));
+                    return { key, runs: rs, start, end, commit: rs[0].commitSha, failed: rs.some((r) => r.status === 'failed') };
+                }).sort((a, b) => b.start - a.start).slice(0, 40);
+            }, [runs]);
+
+            const current = groups.find((g) => g.key === selected) || groups[0];
+
+            useEffect(() => {
+                if (!current) return;
+                current.runs.filter((r) => !detail[r.id]).forEach((r) => {
+                    graphqlClient.query(CI_RUN, { id: r.id }).then((d) => {
+                        if (d && d.testRun) setDetail((prev) => ({ ...prev, [r.id]: d.testRun }));
+                    }).catch(() => {});
+                });
+            }, [current && current.key]);
+
+            if (loading) return <div className="loading">Loading CI runs…</div>;
+            if (error) return <div className="error">Could not load CI runs: {error}</div>;
+            if (!current) return <div className="empty-state">No CI runs on main yet.</div>;
+
+            const lanes = current.runs.map((r) => detail[r.id]).filter(Boolean)
+                .sort((a, b) => ciMs(a.startTime) - ciMs(b.startTime));
+            const runPicker = (
+                <div className="ci-runs">
+                    {groups.map((g) => (
+                        <button key={g.key} className={`ci-run ${g.key === current.key ? 'active' : ''}`} onClick={() => navigate(`/ci/${encodeURIComponent(g.key)}`)}>
+                            <span className={`ci-dot ${g.failed ? 'bad' : 'ok'}`}></span>
+                            <span className="ci-sha">{(g.commit || '').slice(0, 8)}</span>
+                            <span className="ci-when">{new Date(g.start).toISOString().slice(5, 16).replace('T', ' ')}</span>
+                            <span className="ci-wall">{ciDur(g.end - g.start)}</span>
+                        </button>
+                    ))}
+                </div>
+            );
+            const timed = lanes.some((l) => (l.suiteRuns || []).some((s) => isFinite(ciMs(s.startTime))));
+            if (!timed) return <div className="ci-timeline">{runPicker}<div className="loading">Loading reports…</div></div>;
+            const suites = lanes.flatMap((l) => (l.suiteRuns || []).map((s) => ({ lane: l, s })));
+            const specs = suites.flatMap(({ lane, s }) => (s.specRuns || []).map((sp) => ({ lane, s, sp })));
+            const t0 = Math.min(...[...suites.map(({ s }) => ciMs(s.startTime)), ...specs.map(({ sp }) => ciMs(sp.startTime))].filter(isFinite));
+            const t1 = Math.max(...[...suites.map(({ s }) => ciMs(s.endTime)), ...specs.map(({ sp }) => ciMs(sp.endTime))].filter(isFinite));
+            const span = Math.max(1, t1 - t0);
+            const W = 1100, labelW = 300, plotW = W - labelW - 70, rowH = 16, laneH = 26;
+            const x = (t) => labelW + ((t - t0) / span) * plotW;
+            const step = [5e3, 10e3, 30e3, 60e3, 120e3, 300e3, 600e3, 1800e3].find((st) => span / st <= 12) || 3600e3;
+            let y = 28; const rows = [];
+            lanes.forEach((l) => {
+                const laneName = (l.metadata && l.metadata.lane) ? `${l.metadata.lane} · ${l.projectId}` : l.projectId;
+                const ss = (l.suiteRuns || []).slice().sort((a, b) => ciMs(a.startTime) - ciMs(b.startTime));
+                const ls = Math.min(...ss.map((s) => ciMs(s.startTime)).filter(isFinite));
+                const le = Math.max(...ss.map((s) => ciMs(s.endTime)).filter(isFinite));
+                const nSpecs = ss.reduce((n, s) => n + (s.specRuns || []).length, 0);
+                const nFail = ss.reduce((n, s) => n + (s.specRuns || []).filter((sp) => sp.status === 'failed').length, 0);
+                const expanded = open[l.id] !== undefined ? open[l.id] : (le - ls) >= 60e3;
+                rows.push({ kind: 'lane', y, l, laneName, ls, le, nSpecs, nFail, expanded, suites: ss.length }); y += laneH;
+                if (expanded) ss.forEach((s) => { rows.push({ kind: 'suite', y, l, s }); y += rowH + 3; });
+            });
+            const H = y + 10;
+            const slowest = specs.filter(({ sp }) => showSub || !sp.specName.includes('/'))
+                .map((o) => ({ ...o, ms: ciMs(o.sp.endTime) - ciMs(o.sp.startTime) })).filter((o) => isFinite(o.ms))
+                .sort((a, b) => b.ms - a.ms).slice(0, 15);
+            const link = (l, s, sp) => `/test-runs/${l.id}/${encodeURIComponent(s.suiteName)}` + (sp ? `/${encodeURIComponent(sp.specName)}` : '');
+
+            return (
+                <div className="ci-timeline">
+                    {runPicker}
+                    <div className="ci-head">
+                        <h2>{current.key.startsWith('run-') ? `CI run ${current.key.slice(4)}` : `Commit ${(current.commit || '').slice(0, 8)}`}</h2>
+                        <span className="ci-meta">{lanes.length} of {current.runs.length} reports loaded · {specs.length} tests · {ciDur(span)} from first to last test</span>
+                        {lanes[0] && lanes[0].metadata && lanes[0].metadata.build_url && <a className="ci-link" href={lanes[0].metadata.build_url} target="_blank" rel="noopener noreferrer">GitHub run</a>}
+                        <label className="ci-toggle"><input type="checkbox" checked={showSub} onChange={(e) => setShowSub(e.target.checked)} /> subtests</label>
+                    </div>
+                    <div className="ci-chart">
+                        <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Test timeline of this CI run">
+                            {Array.from({ length: Math.floor(span / step) + 1 }, (_, i) => i * step).map((t) => (
+                                <g key={t}><line x1={x(t0 + t)} x2={x(t0 + t)} y1={20} y2={H - 6} stroke="var(--border-light, #e5e7eb)" />
+                                    <text x={x(t0 + t)} y={14} textAnchor="middle" fontSize="10.5" fill="var(--text-tertiary, #9ca3af)">{ciDur(t)}</text></g>
+                            ))}
+                            {rows.map((r, i) => r.kind === 'lane' ? (
+                                <g key={i} style={{ cursor: 'pointer' }} onClick={() => setOpen((o) => ({ ...o, [r.l.id]: !r.expanded }))}>
+                                    <text x={8} y={r.y + 16} fontSize="12.5" fontWeight="600" fill="var(--text-primary)">{r.expanded ? '▾' : '▸'} {r.laneName.length > 34 ? r.laneName.slice(0, 33) + '…' : r.laneName}</text>
+                                    {isFinite(r.ls) && isFinite(r.le) && <rect x={x(r.ls)} y={r.y + 5} width={Math.max(2, x(r.le) - x(r.ls))} height={12} rx="2"
+                                        fill={r.nFail ? 'var(--error, #ef4444)' : 'var(--primary, #10b981)'} opacity="0.35">
+                                        <title>{`${r.laneName}\n${r.suites} suites · ${r.nSpecs} tests${r.nFail ? ` · ${r.nFail} failed` : ''}\n${ciDur(r.le - r.ls)}, from +${ciDur(r.ls - t0)}`}</title></rect>}
+                                    {isFinite(r.le) && <text x={x(r.le) + 5} y={r.y + 15} fontSize="10.5" fill="var(--text-tertiary, #9ca3af)">{ciDur(r.le - r.ls)} · {r.nSpecs} tests{r.nFail ? ` · ${r.nFail} failed` : ''}</text>}
+                                    <line x1={8} x2={W - 8} y1={r.y + 21} y2={r.y + 21} stroke="var(--border-light, #e5e7eb)" /></g>
+                            ) : (
+                                <g key={i}>
+                                    <text x={20} y={r.y + 12} fontSize="11.5" fill="var(--text-secondary)" style={{ cursor: 'pointer' }} onClick={() => navigate(link(r.l, r.s))}>
+                                        {r.s.suiteName.length > 40 ? '…' + r.s.suiteName.slice(-39) : r.s.suiteName}</text>
+                                    {isFinite(ciMs(r.s.startTime)) && isFinite(ciMs(r.s.endTime)) &&
+                                        <rect x={x(ciMs(r.s.startTime))} y={r.y + 2} width={Math.max(1, x(ciMs(r.s.endTime)) - x(ciMs(r.s.startTime)))} height={rowH - 4} fill="var(--bg-tertiary, #f3f4f6)" />}
+                                    {(r.s.specRuns || []).filter((sp) => showSub || !sp.specName.includes('/')).map((sp, j) => {
+                                        const a = ciMs(sp.startTime), b = ciMs(sp.endTime); if (!isFinite(a)) return null;
+                                        const sub = sp.specName.includes('/');
+                                        return (<rect key={j} x={x(a)} y={r.y + (sub ? 9 : 1)} width={Math.max(1.5, x(isFinite(b) ? b : a) - x(a))} height={sub ? rowH - 10 : rowH - 2} rx="1.5"
+                                            fill={ciColor(sp.status)} opacity={sub ? 0.6 : 0.9} style={{ cursor: 'pointer' }} onClick={() => navigate(link(r.l, r.s, sp))}>
+                                            <title>{`${sp.specName}\n${sp.status} · ${ciDur(b - a)} · started +${ciDur(a - t0)}`}</title></rect>);
+                                    })}
+                                    <text x={x(ciMs(r.s.endTime) || t0) + 5} y={r.y + 12} fontSize="10.5" fill="var(--text-tertiary, #9ca3af)">{ciDur(ciMs(r.s.endTime) - ciMs(r.s.startTime))}</text>
+                                </g>
+                            ))}
+                        </svg>
+                    </div>
+                    <h3 className="ci-sub">Slowest tests</h3>
+                    <table className="ci-slow"><tbody>
+                        {slowest.map(({ lane: l, s, sp, ms }, i) => (
+                            <tr key={i} onClick={() => navigate(link(l, s, sp))}>
+                                <td className="ci-num">{ciDur(ms)}</td><td><span className={`ci-dot ${sp.status === 'failed' ? 'bad' : 'ok'}`}></span>{sp.specName}</td>
+                                <td className="ci-where">{(l.metadata && l.metadata.lane) || l.projectId} · {s.suiteName.split('/').pop()}</td>
+                            </tr>))}
+                    </tbody></table>
+                </div>
+            );
+        }
+
         function TestRuns() {
             const [testRuns, setTestRuns] = useState([]);
             const [selectedRun, setSelectedRun] = useState(null);
@@ -9907,6 +10083,10 @@
                 
                 if (route === '/status') {
                     return <StatusPage />;
+                }
+
+                if (route === '/ci' || route.startsWith('/ci/')) {
+                    return <CITimeline />;
                 }
 
                 if (route === '/test-runs' || route.startsWith('/test-runs/')) {
