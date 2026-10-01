@@ -54,6 +54,10 @@ type SpecRun struct {
 	RetryCount      int       `json:"retry_count"`
 	VideoURL        string    `json:"video_url"`
 	Description     string    `json:"description"`
+	// Metadata is free-form per-test detail a reporter can send: the test's
+	// stable key, the spec criteria it proves, what it does and how it is
+	// judged (see /api/v1/requirements/coverage).
+	Metadata map[string]interface{} `json:"metadata"`
 }
 
 type Tag struct {
@@ -217,6 +221,7 @@ func ConvertSpecRuns(reqSpecRuns []SpecRun) []*testingDomain.SpecRun {
 			Tags:           domainTags,
 			VideoURL:       reqSpec.VideoURL,
 			Description:    reqSpec.Description,
+			Metadata:       reqSpec.Metadata,
 		}
 	}
 

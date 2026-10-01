@@ -26,6 +26,7 @@ type DomainHandlerV2 struct {
 	flakyTestHandler      *FlakyTestHandler
 	summaryHandler        *summaryInterfaces.SummaryHandler
 	shareHandler          *ShareHandler
+	coverageHandler       *CoverageHandler
 
 	// Middleware
 	authMiddleware *interfaces.AuthMiddlewareAdapter
@@ -112,6 +113,9 @@ func (h *DomainHandlerV2) RegisterRoutes(router *gin.Engine) {
 	h.systemHandler.RegisterRoutes(adminGroup)
 	h.flakyTestHandler.RegisterRoutes(userGroup)
 	h.shareHandler.RegisterRoutes(router, userGroup)
+	if h.coverageHandler != nil {
+		h.coverageHandler.RegisterRoutes(userGroup)
+	}
 
 	// Summary
 	userGroup.GET("/summary/:projectId/:seed", h.summaryHandler.GetSummary)
@@ -122,6 +126,10 @@ func (h *DomainHandlerV2) RegisterRoutes(router *gin.Engine) {
 	// Log route registration
 	h.logger.Info("All routes registered successfully with split handlers")
 }
+
+// SetCoverageHandler adds the requirements coverage routes (registered by
+// RegisterRoutes when set).
+func (h *DomainHandlerV2) SetCoverageHandler(ch *CoverageHandler) { h.coverageHandler = ch }
 
 // Helper methods
 

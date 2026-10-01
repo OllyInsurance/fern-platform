@@ -110,6 +110,8 @@ func main() {
 		authMiddleware,
 		logger,
 	)
+	// Requirements coverage: spec -> criterion -> test registry + latest results.
+	domainHandler.SetCoverageHandler(api.NewCoverageHandler(db.DB, logger))
 	domainHandler.RegisterRoutes(router)
 	logger.WithService("fern-platform").Info("Using split handler architecture (V2)")
 

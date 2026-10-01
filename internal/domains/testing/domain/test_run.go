@@ -50,22 +50,23 @@ type SuiteRun struct {
 
 // SpecRun represents a single test specification execution
 type SpecRun struct {
-	ID             uint          `json:"id"`
-	SuiteRunID     uint          `json:"suite_run_id"`
-	Name           string        `json:"name"`
-	ClassName      string        `json:"class_name"`
-	Status         string        `json:"status"`
-	StartTime      time.Time     `json:"start_time"`
-	EndTime        *time.Time    `json:"end_time"`
-	Duration       time.Duration `json:"duration"`
-	ErrorMessage   string        `json:"error_message"`
-	FailureMessage string        `json:"failure_message"`
-	StackTrace     string        `json:"stack_trace"`
-	VideoURL       string        `json:"video_url"`
-	Description    string        `json:"description"`
-	RetryCount     int           `json:"retry_count"`
-	IsFlaky        bool          `json:"is_flaky"`
-	Tags           []Tag         `json:"tags"`
+	ID             uint                   `json:"id"`
+	SuiteRunID     uint                   `json:"suite_run_id"`
+	Name           string                 `json:"name"`
+	ClassName      string                 `json:"class_name"`
+	Status         string                 `json:"status"`
+	StartTime      time.Time              `json:"start_time"`
+	EndTime        *time.Time             `json:"end_time"`
+	Duration       time.Duration          `json:"duration"`
+	ErrorMessage   string                 `json:"error_message"`
+	FailureMessage string                 `json:"failure_message"`
+	StackTrace     string                 `json:"stack_trace"`
+	VideoURL       string                 `json:"video_url"`
+	Description    string                 `json:"description"`
+	Metadata       map[string]interface{} `json:"metadata,omitempty"`
+	RetryCount     int                    `json:"retry_count"`
+	IsFlaky        bool                   `json:"is_flaky"`
+	Tags           []Tag                  `json:"tags"`
 }
 
 // Tag represents a test tag for categorization
