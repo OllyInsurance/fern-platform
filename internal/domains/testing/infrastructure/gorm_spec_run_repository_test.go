@@ -101,6 +101,7 @@ var _ = Describe("GormSpecRunRepository", func() {
 						specRun.StackTrace,   // stack_trace
 						specRun.VideoURL,     // video_url
 						specRun.Description,  // description
+						nil,                  // metadata
 						specRun.RetryCount,   // retry_count
 						specRun.IsFlaky,      // is_flaky
 					).
@@ -167,9 +168,9 @@ var _ = Describe("GormSpecRunRepository", func() {
 				mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO "spec_runs"`)).
 					WithArgs(
 						AnyTime{}, AnyTime{}, nil, // created_at, updated_at, deleted_at for first record
-						uint(1), "test-spec-1", "passed", AnyTime{}, AnyTime{}, int64(1000), "", "", "", "", 0, false,
+						uint(1), "test-spec-1", "passed", AnyTime{}, AnyTime{}, int64(1000), "", "", "", "", nil, 0, false,
 						AnyTime{}, AnyTime{}, nil, // created_at, updated_at, deleted_at for second record
-						uint(1), "test-spec-2", "failed", AnyTime{}, AnyTime{}, int64(2000), "", "", "", "", 0, false,
+						uint(1), "test-spec-2", "failed", AnyTime{}, AnyTime{}, int64(2000), "", "", "", "", nil, 0, false,
 					).
 					WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1).AddRow(2))
 				mock.ExpectCommit()
@@ -198,7 +199,7 @@ var _ = Describe("GormSpecRunRepository", func() {
 				mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO "spec_runs"`)).
 					WithArgs(
 						AnyTime{}, AnyTime{}, nil, // created_at, updated_at, deleted_at
-						uint(1), "test-spec-1", "passed", AnyTime{}, nil, int64(0), "", "", "", "", 0, false,
+						uint(1), "test-spec-1", "passed", AnyTime{}, nil, int64(0), "", "", "", "", nil, 0, false,
 					).
 					WillReturnError(errors.New("batch insert failed"))
 				mock.ExpectRollback()

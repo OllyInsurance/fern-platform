@@ -119,6 +119,7 @@ type SpecRun struct {
 	StackTrace   string     `gorm:"type:text" json:"stack_trace,omitempty"`
 	VideoURL     string     `gorm:"type:text" json:"video_url,omitempty"`
 	Description  string     `gorm:"type:text" json:"description,omitempty"`
+	Metadata     JSONMap    `gorm:"type:jsonb" json:"metadata,omitempty"`
 	RetryCount   int        `json:"retry_count"`
 	IsFlaky      bool       `gorm:"index" json:"is_flaky"`
 	Tags         []Tag      `gorm:"many2many:spec_run_tags;" json:"tags,omitempty"`
