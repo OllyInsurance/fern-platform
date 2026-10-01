@@ -43,10 +43,12 @@ func (h *CoverageHandler) RegisterRoutes(userGroup *gin.RouterGroup) {
 // --- import -------------------------------------------------------------------
 
 type registryCriterion struct {
-	ID    string `json:"id" binding:"required"`
-	Kind  string `json:"kind"`
-	Title string `json:"title"`
-	Quote string `json:"quote"`
+	ID            string `json:"id" binding:"required"`
+	Kind          string `json:"kind"`
+	Title         string `json:"title"`
+	Quote         string `json:"quote"`
+	BuildStatus   string `json:"build_status"`   // built | partial | not_built ("" = not assessed)
+	BuildEvidence string `json:"build_evidence"` // where in the code, or what is missing
 }
 
 type registrySpec struct {
@@ -176,8 +178,8 @@ func (h *CoverageHandler) importRegistry(c *gin.Context) {
 				if kind == "" {
 					kind = "ac"
 				}
-				if err := tx.Exec(`INSERT INTO requirement_criteria (spec_key, criterion_id, kind, title, quote, position) VALUES (?,?,?,?,?,?)`,
-					s.Key, cr.ID, kind, cr.Title, cr.Quote, j).Error; err != nil {
+				if err := tx.Exec(`INSERT INTO requirement_criteria (spec_key, criterion_id, kind, title, quote, build_status, build_evidence, position) VALUES (?,?,?,?,?,?,?,?)`,
+					s.Key, cr.ID, kind, cr.Title, cr.Quote, cr.BuildStatus, cr.BuildEvidence, j).Error; err != nil {
 					return err
 				}
 			}
@@ -255,11 +257,13 @@ type coverageTest struct {
 }
 
 type coverageCriterion struct {
-	ID    string   `json:"id"`
-	Kind  string   `json:"kind"`
-	Title string   `json:"title"`
-	Quote string   `json:"quote"`
-	Tests []string `json:"tests"`
+	ID            string   `json:"id"`
+	Kind          string   `json:"kind"`
+	Title         string   `json:"title"`
+	Quote         string   `json:"quote"`
+	BuildStatus   string   `json:"build_status"`
+	BuildEvidence string   `json:"build_evidence"`
+	Tests         []string `json:"tests"`
 }
 
 type coverageSpec struct {
@@ -302,9 +306,9 @@ func (h *CoverageHandler) getCoverage(c *gin.Context) {
 		return
 	}
 	var crits []struct {
-		SpecKey, CriterionID, Kind, Title, Quote string
+		SpecKey, CriterionID, Kind, Title, Quote, BuildStatus, BuildEvidence string
 	}
-	h.db.Raw(`SELECT spec_key, criterion_id, kind, title, quote FROM requirement_criteria ORDER BY spec_key, position`).Scan(&crits)
+	h.db.Raw(`SELECT spec_key, criterion_id, kind, title, quote, build_status, build_evidence FROM requirement_criteria ORDER BY spec_key, position`).Scan(&crits)
 	var links []struct{ TestKey, SpecKey, CriterionID string }
 	h.db.Raw(`SELECT test_key, spec_key, criterion_id FROM requirement_links ORDER BY test_key, spec_key, criterion_id`).Scan(&links)
 	var rows []struct {
@@ -341,7 +345,8 @@ func (h *CoverageHandler) getCoverage(c *gin.Context) {
 			continue
 		}
 		critIdx[cr.SpecKey+"\x00"+cr.CriterionID] = len(specs[i].Criteria)
-		specs[i].Criteria = append(specs[i].Criteria, coverageCriterion{ID: cr.CriterionID, Kind: cr.Kind, Title: cr.Title, Quote: cr.Quote, Tests: []string{}})
+		specs[i].Criteria = append(specs[i].Criteria, coverageCriterion{ID: cr.CriterionID, Kind: cr.Kind, Title: cr.Title, Quote: cr.Quote,
+			BuildStatus: cr.BuildStatus, BuildEvidence: cr.BuildEvidence, Tests: []string{}})
 	}
 	for _, l := range links {
 		i, ok := specIdx[l.SpecKey]

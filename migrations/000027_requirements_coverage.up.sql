@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS requirement_criteria (
     kind         VARCHAR(16)  NOT NULL DEFAULT 'ac',     -- ac | scenario | nfr
     title        TEXT         NOT NULL DEFAULT '',
     quote        TEXT         NOT NULL DEFAULT '',       -- verbatim from the source ticket
+    build_status   VARCHAR(16) NOT NULL DEFAULT '',      -- built | partial | not_built, checked in the code
+    build_evidence TEXT        NOT NULL DEFAULT '',      -- file:line (or what is missing)
     position     INT          NOT NULL DEFAULT 0,
     PRIMARY KEY (spec_key, criterion_id)
 );

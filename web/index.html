@@ -170,6 +170,9 @@
         .cov-pill.skipped { background: rgba(217,119,6,.12); color: var(--warning, #b45309); }
         .cov-pill.notrun { background: var(--bg-tertiary); color: var(--text-secondary); }
         .cov-pill.notest { background: transparent; color: var(--error, #dc2626); border: 1px dashed var(--error, #dc2626); }
+        .cov-pill.notbuilt { background: rgba(139,92,246,.14); color: #8b5cf6; }
+        .cov-build { margin-top: 4px; font-size: 11.5px; font-weight: 600; word-break: break-word; }
+        .cov-build.built { color: var(--success, #059669); } .cov-build.partial { color: var(--warning, #b45309); } .cov-build.not_built { color: #8b5cf6; }
         .cov-tests { display: flex; flex-direction: column; gap: 4px; }
         .cov-test { display: inline-flex; align-items: flex-start; gap: 6px; cursor: pointer; color: var(--text-primary); background: none; border: 0; padding: 0; text-align: left; font-size: 12.5px; }
         .cov-test:hover .cov-tname { text-decoration: underline; }
@@ -5036,16 +5039,21 @@
         // on its latest run. Registry: PUT /api/v1/requirements; this view reads
         // GET /api/v1/requirements/coverage. #/coverage/<SPEC> deep-links a spec.
         const COV_VERDICTS = [
-            ['all', 'All criteria'], ['notest', 'No test'], ['failing', 'Failing'],
+            ['all', 'All criteria'], ['notbuilt', 'Not built'], ['notest', 'No test'], ['failing', 'Failing'],
             ['skipped', 'Only skipped'], ['notrun', 'Not run'], ['passing', 'Passing'],
         ];
-        const covVerdictLabel = { passing: 'Passing', failing: 'Failing', skipped: 'Skipped', notrun: 'Not run', notest: 'No test' };
+        const covVerdictLabel = { passing: 'Passing', failing: 'Failing', skipped: 'Skipped', notrun: 'Not run', notest: 'No test', notbuilt: 'Not built' };
+        const covBuildLabel = { built: 'Built', partial: 'Partly built', not_built: 'Not built' };
         const covStatus = (t) => (t && t.latest ? t.latest.status : 'none');
-        function covVerdict(tests) {
-            if (!tests.length) return 'notest';
+        // A failing or passing test speaks for itself. Otherwise a criterion the
+        // code does not implement is "Not built" (a product gap, its tests stop at
+        // a KNOWN GAP), which is a different ask from "No test" (a test gap).
+        function covVerdict(tests, build) {
             const st = tests.map(covStatus);
             if (st.includes('failed')) return 'failing';
             if (st.includes('passed')) return 'passing';
+            if (build === 'not_built') return 'notbuilt';
+            if (!tests.length) return 'notest';
             if (st.includes('skipped')) return 'skipped';
             return 'notrun';
         }
@@ -5090,11 +5098,11 @@
                     ...s,
                     criteria: s.criteria.map(c => {
                         const ts = c.tests.map(k => tests[k]).filter(Boolean);
-                        return { ...c, testObjs: ts, verdict: covVerdict(ts) };
+                        return { ...c, testObjs: ts, verdict: covVerdict(ts, c.build_status) };
                     }),
                     specTestObjs: s.spec_tests.map(k => tests[k]).filter(Boolean),
                 }));
-                const counts = { all: 0, notest: 0, failing: 0, skipped: 0, notrun: 0, passing: 0 };
+                const counts = { all: 0, notbuilt: 0, notest: 0, failing: 0, skipped: 0, notrun: 0, passing: 0 };
                 specs.forEach(s => s.criteria.forEach(c => { counts.all++; counts[c.verdict]++; }));
                 const linked = data.tests.filter(t => t.links.length).length;
                 return { specs, tests, counts, linked };
@@ -5123,14 +5131,14 @@
             });
 
             const exportCsv = () => {
-                const rows = [['Spec', 'Spec title', 'Criterion', 'Kind', 'Criterion title', 'Criterion (quoted)', 'Verdict', 'Test', 'Repo', 'File', 'Line', 'What it tests', 'How it is judged', 'Latest status', 'Last run', 'Note', 'Confidence']];
+                const rows = [['Spec', 'Spec title', 'Criterion', 'Kind', 'Criterion title', 'Criterion (quoted)', 'Built?', 'Build evidence', 'Verdict', 'Test', 'Repo', 'File', 'Line', 'What it tests', 'How it is judged', 'Latest status', 'Last run', 'Note', 'Confidence']];
                 model.specs.forEach(s => s.criteria.forEach(c => {
                     const ts = c.testObjs.length ? c.testObjs : [null];
-                    ts.forEach(t => rows.push([s.key, s.title, c.id, c.kind, c.title, c.quote, covVerdictLabel[c.verdict],
+                    ts.forEach(t => rows.push([s.key, s.title, c.id, c.kind, c.title, c.quote, covBuildLabel[c.build_status] || '', c.build_evidence || '', covVerdictLabel[c.verdict],
                         t ? t.name : '', t ? t.repo : '', t ? t.file : '', t ? t.line : '', t ? t.what : '', t ? t.how : '',
                         t ? covStatus(t) : '', t && t.latest ? t.latest.start_time : '', t ? t.note : '', t ? t.confidence : '']));
                 }));
-                data.tests.filter(t => !t.links.length).forEach(t => rows.push(['', '', '', '', '', '', 'Not linked to a spec', t.name, t.repo, t.file, t.line, t.what, t.how, covStatus(t), t.latest ? t.latest.start_time : '', t.note, t.confidence]));
+                data.tests.filter(t => !t.links.length).forEach(t => rows.push(['', '', '', '', '', '', '', '', 'Not linked to a spec', t.name, t.repo, t.file, t.line, t.what, t.how, covStatus(t), t.latest ? t.latest.start_time : '', t.note, t.confidence]));
                 const blob = new Blob([covCsv(rows)], { type: 'text/csv' });
                 const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `spec-coverage-${branch}.csv`; a.click();
             };
@@ -5204,6 +5212,7 @@
                                                         <td>
                                                             {c.title ? <div className="cov-title">{c.title}</div> : null}
                                                             <div className={`cov-quote ${expanded[k] ? '' : 'clamp'}`} onClick={() => setExpanded({ ...expanded, [k]: !expanded[k] })}>“{c.quote}”</div>
+                                                            {c.build_status ? <div className={`cov-build ${c.build_status}`}>{covBuildLabel[c.build_status] || c.build_status}{c.build_evidence ? <span className="cov-muted"> · {c.build_evidence}</span> : null}</div> : null}
                                                         </td>
                                                         <td><div className="cov-tests">{c.testObjs.length ? c.testObjs.map(t => <TestChip key={t.key} t={t} />) : <span className="cov-muted">No test proves this</span>}</div></td>
                                                         <td><span className={`cov-pill ${c.verdict}`}>{covVerdictLabel[c.verdict]}</span></td>
