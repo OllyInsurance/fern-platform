@@ -270,6 +270,12 @@ func (h *RunsHandler) trends(c *gin.Context) {
 			return
 		}
 		series, err = h.testTrends(key, branch, *since, *until, limit)
+		if len(series) > testTrendSeriesCap {
+			// a prefix as broad as "Test" names thousands of tests
+			c.JSON(http.StatusOK, gin.H{"level": level, "key": key, "branch": branch, "series": series[:testTrendSeriesCap],
+				"truncated": true, "series_total": len(series)})
+			return
+		}
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "level must be lane, bucket or test"})
 		return
@@ -327,6 +333,9 @@ func (h *RunsHandler) nodeTrends(level, key, branch string, since, until time.Ti
 	}
 	return out, nil
 }
+
+// testTrendSeriesCap bounds how many series one test trend returns.
+const testTrendSeriesCap = 200
 
 // testTrendRowCap bounds how many spec runs one test trend reads.
 const testTrendRowCap = 200000
