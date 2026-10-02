@@ -112,6 +112,12 @@ func main() {
 	)
 	// Requirements coverage: spec -> criterion -> test registry + latest results.
 	domainHandler.SetCoverageHandler(api.NewCoverageHandler(db.DB, logger))
+	// CI runs: list, tree, trends, compare; the summary refreshes on ingest.
+	runsStore := api.NewRunsStore(db.DB, logger)
+	runsCtx, stopRuns := context.WithCancel(context.Background())
+	defer stopRuns()
+	runsStore.Start(runsCtx)
+	domainHandler.SetRunsHandler(api.NewRunsHandler(db.DB, runsStore, logger))
 	domainHandler.RegisterRoutes(router)
 	logger.WithService("fern-platform").Info("Using split handler architecture (V2)")
 

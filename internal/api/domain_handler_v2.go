@@ -27,6 +27,7 @@ type DomainHandlerV2 struct {
 	summaryHandler        *summaryInterfaces.SummaryHandler
 	shareHandler          *ShareHandler
 	coverageHandler       *CoverageHandler
+	runsHandler           *RunsHandler
 
 	// Middleware
 	authMiddleware *interfaces.AuthMiddlewareAdapter
@@ -116,6 +117,9 @@ func (h *DomainHandlerV2) RegisterRoutes(router *gin.Engine) {
 	if h.coverageHandler != nil {
 		h.coverageHandler.RegisterRoutes(userGroup)
 	}
+	if h.runsHandler != nil {
+		h.runsHandler.RegisterRoutes(userGroup, adminGroup)
+	}
 
 	// Summary
 	userGroup.GET("/summary/:projectId/:seed", h.summaryHandler.GetSummary)
@@ -130,6 +134,13 @@ func (h *DomainHandlerV2) RegisterRoutes(router *gin.Engine) {
 // SetCoverageHandler adds the requirements coverage routes (registered by
 // RegisterRoutes when set).
 func (h *DomainHandlerV2) SetCoverageHandler(ch *CoverageHandler) { h.coverageHandler = ch }
+
+// SetRunsHandler adds the CI runs routes and makes ingest keep the run
+// summary current.
+func (h *DomainHandlerV2) SetRunsHandler(rh *RunsHandler) {
+	h.runsHandler = rh
+	h.testRunHandler.SetRunsStore(rh.store)
+}
 
 // Helper methods
 
