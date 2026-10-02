@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -25,7 +26,8 @@ import (
 // the spec_runs every reporter already sends, matched by name.
 type CoverageHandler struct {
 	*BaseHandler
-	db *gorm.DB
+	db     *gorm.DB
+	snapMu sync.Mutex // one snapshot write at a time
 }
 
 // NewCoverageHandler creates a new requirements coverage handler.
@@ -39,6 +41,8 @@ func NewCoverageHandler(db *gorm.DB, logger *logging.Logger) *CoverageHandler {
 func (h *CoverageHandler) RegisterRoutes(userGroup *gin.RouterGroup) {
 	userGroup.PUT("/requirements", h.importRegistry)
 	userGroup.GET("/requirements/coverage", h.getCoverage)
+	userGroup.GET("/requirements/coverage/snapshots", h.listSnapshots)
+	userGroup.POST("/requirements/coverage/snapshots", h.postSnapshot)
 	h.registerMetaRoutes(userGroup)
 	h.registerBoardRoutes(userGroup)
 }
@@ -280,6 +284,8 @@ func (h *CoverageHandler) importRegistry(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "import failed: " + err.Error()})
 		return
 	}
+	// The new registry changes today's coverage: record it.
+	h.snapshotLogged("import")
 	c.JSON(http.StatusOK, gin.H{"specs": len(req.Specs), "criteria": nCrit, "tests": len(req.Tests), "links": nLinks})
 }
 
@@ -475,16 +481,76 @@ type specRunRow struct {
 // getCoverage returns the registry with each test's latest result.
 // Query: branch (default main; "any" for every branch), days (default 30).
 func (h *CoverageHandler) getCoverage(c *gin.Context) {
-	branch := c.DefaultQuery("branch", "main")
-	days, _ := strconv.Atoi(c.DefaultQuery("days", "30"))
+	branch := c.DefaultQuery("branch", DefaultCoverageBranch)
+	days, _ := strconv.Atoi(c.DefaultQuery("days", strconv.Itoa(DefaultCoverageDays)))
 	if days <= 0 || days > 365 {
-		days = 30
+		days = DefaultCoverageDays
 	}
 
-	var specs []coverageSpec
-	if err := h.db.Raw(`SELECT spec_key AS key, source, title, url, state, author, synced_at FROM requirement_specs ORDER BY position`).Scan(&specs).Error; err != nil {
+	rep, err := h.computeCoverage(branch, days)
+	if err != nil {
+		h.logger.WithError(err).Error("coverage lookup failed")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	specs, tests := rep.specs, rep.tests
+	meta, err := h.loadAllMeta()
+	if err != nil {
+		h.logger.WithError(err).Error("coverage metadata lookup failed")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	for i := range specs {
+		specs[i].Metadata = meta.get(MetaSpec, specs[i].Key)
+		for j := range specs[i].Criteria {
+			cr := &specs[i].Criteria[j]
+			k := specs[i].Key + ":" + cr.ID
+			cr.Metadata, cr.GapMetadata = meta.get(MetaCriterion, k), meta.get(MetaGap, k)
+		}
+	}
+	for _, t := range tests {
+		t.Metadata = meta.get(MetaTest, t.Key)
+	}
+
+	var imp struct {
+		Source     string
+		GitSHA     string
+		ImportedAt *time.Time
+	}
+	h.db.Raw(`SELECT source, git_sha, imported_at FROM requirement_imports ORDER BY id DESC LIMIT 1`).Scan(&imp)
+
+	c.JSON(http.StatusOK, gin.H{
+		"generated_at": time.Now().UTC(),
+		"branch":       branch,
+		"days":         days,
+		"import":       gin.H{"source": imp.Source, "git_sha": imp.GitSHA, "imported_at": imp.ImportedAt},
+		"summary":      rep.summary,
+		"specs":        specs,
+		"tests":        tests,
+	})
+}
+
+// The window the coverage page reads by default, and the one a snapshot
+// records.
+const (
+	DefaultCoverageBranch = "main"
+	DefaultCoverageDays   = 30
+)
+
+// coverageReport is the registry with every verdict decided.
+type coverageReport struct {
+	specs   []coverageSpec
+	tests   []*coverageTest
+	summary coverageSummary
+}
+
+// computeCoverage reads the registry, attaches each test's latest result in
+// the window and decides every verdict. It is what GET /requirements/coverage
+// shows and what a snapshot stores.
+func (h *CoverageHandler) computeCoverage(branch string, days int) (*coverageReport, error) {
+	var specs []coverageSpec
+	if err := h.db.Raw(`SELECT spec_key AS key, source, title, url, state, author, synced_at FROM requirement_specs ORDER BY position`).Scan(&specs).Error; err != nil {
+		return nil, err
 	}
 	var crits []struct {
 		SpecKey, CriterionID, Kind, Title, Quote, BuildStatus, BuildEvidence string
@@ -492,13 +558,11 @@ func (h *CoverageHandler) getCoverage(c *gin.Context) {
 	}
 	if err := h.db.Raw(`SELECT spec_key, criterion_id, kind, title, quote, build_status, build_evidence,
 		gap_category, gap_reason, gap_pathway, gap_ticket, gap_source FROM requirement_criteria ORDER BY spec_key, position`).Scan(&crits).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		return nil, err
 	}
 	var links []struct{ TestKey, SpecKey, CriterionID string }
 	if err := h.db.Raw(`SELECT test_key, spec_key, criterion_id FROM requirement_links ORDER BY test_key, spec_key, criterion_id`).Scan(&links).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		return nil, err
 	}
 	var rows []struct {
 		TestKey, Repo, Framework, File, Name, FernProject, MatchName, MatchMode, MatchHint, What, How, Note, Confidence, Evidence, URL, ParentKey string
@@ -506,8 +570,7 @@ func (h *CoverageHandler) getCoverage(c *gin.Context) {
 	}
 	if err := h.db.Raw(`SELECT test_key, repo, framework, file, line, name, fern_project, match_name, match_mode, match_hint, what, how, note, confidence, evidence, url, parent_key
 		FROM requirement_test_cases ORDER BY repo, file, line`).Scan(&rows).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		return nil, err
 	}
 
 	tests := make([]*coverageTest, 0, len(rows))
@@ -565,48 +628,13 @@ func (h *CoverageHandler) getCoverage(c *gin.Context) {
 	}
 
 	if err := h.attachResults(tests, projects, branch, days); err != nil {
-		h.logger.WithError(err).Error("coverage results lookup failed")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		return nil, err
 	}
 	for _, t := range tests {
 		t.Verdict, _ = t.outcome()
 	}
 	summary := summarize(specs, byKey)
-	meta, err := h.loadAllMeta()
-	if err != nil {
-		h.logger.WithError(err).Error("coverage metadata lookup failed")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	for i := range specs {
-		specs[i].Metadata = meta.get(MetaSpec, specs[i].Key)
-		for j := range specs[i].Criteria {
-			cr := &specs[i].Criteria[j]
-			k := specs[i].Key + ":" + cr.ID
-			cr.Metadata, cr.GapMetadata = meta.get(MetaCriterion, k), meta.get(MetaGap, k)
-		}
-	}
-	for _, t := range tests {
-		t.Metadata = meta.get(MetaTest, t.Key)
-	}
-
-	var imp struct {
-		Source     string
-		GitSHA     string
-		ImportedAt *time.Time
-	}
-	h.db.Raw(`SELECT source, git_sha, imported_at FROM requirement_imports ORDER BY id DESC LIMIT 1`).Scan(&imp)
-
-	c.JSON(http.StatusOK, gin.H{
-		"generated_at": time.Now().UTC(),
-		"branch":       branch,
-		"days":         days,
-		"import":       gin.H{"source": imp.Source, "git_sha": imp.GitSHA, "imported_at": imp.ImportedAt},
-		"summary":      summary,
-		"specs":        specs,
-		"tests":        tests,
-	})
+	return &coverageReport{specs: specs, tests: tests, summary: summary}, nil
 }
 
 // attachResults finds, for every test case, the newest spec run in its Fern

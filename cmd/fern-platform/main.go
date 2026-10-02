@@ -111,7 +111,12 @@ func main() {
 		logger,
 	)
 	// Requirements coverage: spec -> criterion -> test registry + latest results.
-	domainHandler.SetCoverageHandler(api.NewCoverageHandler(db.DB, logger))
+	coverageHandler := api.NewCoverageHandler(db.DB, logger)
+	domainHandler.SetCoverageHandler(coverageHandler)
+	// Coverage over time: today's snapshot now, then every few hours.
+	snapCtx, stopSnaps := context.WithCancel(context.Background())
+	defer stopSnaps()
+	coverageHandler.StartSnapshots(snapCtx)
 	// CI runs: list, tree, trends, compare; the summary refreshes on ingest.
 	runsStore := api.NewRunsStore(db.DB, logger)
 	runsCtx, stopRuns := context.WithCancel(context.Background())
