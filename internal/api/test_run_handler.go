@@ -24,6 +24,7 @@ type TestRunHandler struct {
 	testingService *application.TestRunService
 	tagService     *tagsApp.TagService
 	projectService *projectsApp.ProjectService
+	runs           *RunsStore // nil: no CI run summary
 }
 
 // NewTestRunHandler creates a new test run handler
@@ -34,6 +35,9 @@ func NewTestRunHandler(testingService *application.TestRunService, projectServic
 		projectService: projectService,
 	}
 }
+
+// SetRunsStore makes ingest refresh the CI run summary of what it wrote.
+func (h *TestRunHandler) SetRunsStore(s *RunsStore) { h.runs = s }
 
 // SetTagService sets the tag service for public endpoints that need tag processing
 func (h *TestRunHandler) SetTagService(tagService *tagsApp.TagService) {
@@ -616,6 +620,7 @@ func (h *TestRunHandler) recordTestRun(c *gin.Context) {
 
 		// If it was newly created (not a duplicate), return immediately
 		if !alreadyExisted {
+			h.runs.Touch(testRun.ID)
 			response := ConvertDomainTestRunToAPI(testRun)
 			c.JSON(http.StatusCreated, response)
 			return
@@ -663,6 +668,7 @@ func (h *TestRunHandler) recordTestRun(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		h.runs.Touch(testRun.ID)
 	}
 
 	response := ConvertDomainTestRunToAPI(testRun)
@@ -750,6 +756,7 @@ func (h *TestRunHandler) completeTestRun(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	h.runs.Touch(testRun.ID)
 
 	c.JSON(http.StatusOK, gin.H{"message": "Test run completed successfully"})
 }
@@ -805,6 +812,7 @@ func (h *TestRunHandler) addSuiteRun(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	h.runs.Touch(testRun.ID)
 
 	c.JSON(http.StatusCreated, gin.H{
 		"id":        suiteRun.ID,
@@ -857,6 +865,9 @@ func (h *TestRunHandler) addSpecRun(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	if h.runs != nil {
+		go h.runs.TouchSuiteRun(req.SuiteRunID)
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
