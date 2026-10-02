@@ -28,7 +28,7 @@ var coverageTestDDL = []string{
 	`CREATE TABLE requirement_test_cases (test_key TEXT PRIMARY KEY, repo TEXT NOT NULL, framework TEXT NOT NULL, file TEXT NOT NULL, line INT NOT NULL DEFAULT 0,
 		name TEXT NOT NULL, fern_project TEXT NOT NULL DEFAULT '', match_name TEXT NOT NULL DEFAULT '', match_mode TEXT NOT NULL DEFAULT 'exact',
 		match_hint TEXT NOT NULL DEFAULT '', what TEXT NOT NULL DEFAULT '', how TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
-		confidence TEXT NOT NULL DEFAULT '', evidence TEXT NOT NULL DEFAULT '', url TEXT NOT NULL DEFAULT '')`,
+		confidence TEXT NOT NULL DEFAULT '', evidence TEXT NOT NULL DEFAULT '', url TEXT NOT NULL DEFAULT '', parent_key TEXT NOT NULL DEFAULT '')`,
 	`CREATE TABLE requirement_links (test_key TEXT NOT NULL, spec_key TEXT NOT NULL, criterion_id TEXT NOT NULL DEFAULT '', PRIMARY KEY (test_key, spec_key, criterion_id))`,
 	`CREATE TABLE requirement_imports (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL DEFAULT '', git_sha TEXT NOT NULL DEFAULT '', specs INT NOT NULL DEFAULT 0,
 		criteria INT NOT NULL DEFAULT 0, tests INT NOT NULL DEFAULT 0, links INT NOT NULL DEFAULT 0, imported_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
@@ -192,7 +192,8 @@ func TestMetaBulk(t *testing.T) {
 const registrySnapshot = `{"source":"t","git_sha":"abc","specs":[{"key":"ENG-465","title":"Claims","criteria":[
 	{"id":"AC-06","quote":"q6","gap":{"category":"not_built","reason":"no code","pathway":"build it","ticket":"OllyInsurance/olly#1","source":"x_test.go:9"}},
 	{"id":"AC-07","quote":"q7"}]}],
-	"tests":[{"key":"olly:t.go:TestA","repo":"olly","framework":"go","file":"t.go","line":3,"name":"TestA","links":[{"spec":"ENG-465","criteria":["AC-07"]}]}]}`
+	"tests":[{"key":"olly:t.go:TestA","repo":"olly","framework":"go","file":"t.go","line":3,"name":"TestA","links":[{"spec":"ENG-465","criteria":["AC-07"]}]},
+		{"key":"olly:t.go:TestA/S07","repo":"olly","framework":"go","file":"t.go","line":9,"name":"TestA/S07","parent":"olly:t.go:TestA","links":[]}]}`
 
 // Metadata lives beside the registry: a re-import replaces specs, criteria
 // and tests but never the metadata, and the coverage read merges it in.
@@ -225,6 +226,7 @@ func TestMetadataSurvivesReimportAndJoinsCoverage(t *testing.T) {
 		} `json:"specs"`
 		Tests []struct {
 			Key      string          `json:"key"`
+			Parent   string          `json:"parent"`
 			Verdict  string          `json:"verdict"`
 			Metadata json.RawMessage `json:"metadata"`
 		} `json:"tests"`
@@ -253,8 +255,11 @@ func TestMetadataSurvivesReimportAndJoinsCoverage(t *testing.T) {
 	if cov.Specs[0].Summary.Criteria != 2 || cov.Specs[0].Summary.Verdicts[VerdictPassing] != 0 {
 		t.Fatalf("spec summary %+v", cov.Specs[0].Summary)
 	}
-	if len(cov.Tests) != 1 || dataOf(t, cov.Tests[0].Metadata)["flaky"] != false || cov.Tests[0].Verdict != VerdictNotRun {
+	if len(cov.Tests) != 2 || dataOf(t, cov.Tests[0].Metadata)["flaky"] != false || cov.Tests[0].Verdict != VerdictNotRun {
 		t.Fatalf("tests %+v", cov.Tests)
+	}
+	if cov.Tests[0].Parent != "" || cov.Tests[1].Parent != "olly:t.go:TestA" {
+		t.Fatalf("parent not stored: %+v", cov.Tests)
 	}
 }
 

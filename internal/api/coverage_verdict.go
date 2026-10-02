@@ -80,7 +80,9 @@ func testVerdict(name string, r *CoverageResult) string {
 		return VerdictFailing
 	case "skipped":
 		switch {
-		case r.GapMarker == "known_defect" || (defectNamed && r.GapMarker != "known_gap" && r.GapMarker != "fixme"):
+		// The gate skips a defect test (helpers.Defect); that skip is the
+		// filed defect, never a known gap.
+		case r.GapMarker == "known_defect" || defectNamed:
 			return VerdictDefect
 		case r.GapMarker == "known_gap" || r.GapMarker == "fixme":
 			return VerdictKnownGap
@@ -89,6 +91,51 @@ func testVerdict(name string, r *CoverageResult) string {
 		return VerdictNotRun
 	}
 	return VerdictNotRun
+}
+
+// outcome is a test's verdict and the result that set it. A Go defect test
+// is decided by the defects pass, which runs what the gate skips: failed
+// there means the defect still reproduces, passed means it is fixed. Every
+// other test, and a defect test the defects pass has not run, is decided by
+// its gate result.
+func (t *coverageTest) outcome() (string, *CoverageResult) {
+	if d := t.DefectsLatest; d != nil {
+		defectNamed := reDefectName.MatchString(t.Name) || reDefectName.MatchString(strings.TrimPrefix(d.SpecName, GoDefectsPrefix))
+		if defectNamed || t.Latest == nil || t.Latest.Status == "skipped" {
+			switch d.Status {
+			case "failed":
+				return VerdictDefect, d
+			case "passed":
+				return VerdictPassing, d
+			}
+		}
+	}
+	return testVerdict(t.Name, t.Latest), t.Latest
+}
+
+// hasResult says whether the test has any result in the window.
+func (t *coverageTest) hasResult() bool { return t.Latest != nil || t.DefectsLatest != nil }
+
+// linkAncestors records, for every test, the keys of the tests above it by
+// following the registry's parent links (a cycle stops the walk).
+func linkAncestors(byKey map[string]*coverageTest) {
+	for _, t := range byKey {
+		t.ancestors = map[string]bool{}
+		for p := t.Parent; p != "" && !t.ancestors[p] && p != t.Key; {
+			t.ancestors[p] = true
+			pt := byKey[p]
+			if pt == nil {
+				break
+			}
+			p = pt.Parent
+		}
+	}
+}
+
+// isUnder says whether t is a subtest of p: by the registry's parent links,
+// or failing those by name.
+func (t *coverageTest) isUnder(p *coverageTest) bool {
+	return t.Parent == p.Key || t.ancestors[p.Key] || isDescendant(t.Name, p.Name)
 }
 
 // isDescendant reports whether child names a subtest of parent: a Go subtest
@@ -122,7 +169,7 @@ func criterionVerdict(tests []*coverageTest) (string, []string) {
 	for _, p := range tests {
 		superseded := false
 		for _, c := range tests {
-			if c != p && c.Latest != nil && isDescendant(c.Name, p.Name) {
+			if c != p && c.hasResult() && c.isUnder(p) {
 				superseded = true
 				break
 			}
@@ -133,13 +180,13 @@ func criterionVerdict(tests []*coverageTest) (string, []string) {
 	}
 	best := VerdictNotRun
 	for _, t := range effective {
-		if v := testVerdict(t.Name, t.Latest); verdictRank[v] > verdictRank[best] {
+		if v, _ := t.outcome(); verdictRank[v] > verdictRank[best] {
 			best = v
 		}
 	}
 	var by []string
 	for _, t := range effective {
-		if testVerdict(t.Name, t.Latest) == best {
+		if v, _ := t.outcome(); v == best {
 			by = append(by, t.Key)
 		}
 	}

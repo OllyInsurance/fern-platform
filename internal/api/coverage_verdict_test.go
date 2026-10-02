@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -62,6 +63,21 @@ func TestTestVerdict(t *testing.T) {
 	}
 }
 
+func TestLinkAncestors(t *testing.T) {
+	byKey := map[string]*coverageTest{
+		"a": {Key: "a"}, "b": {Key: "b", Parent: "a"}, "c": {Key: "c", Parent: "b"},
+		"x": {Key: "x", Parent: "y"}, "y": {Key: "y", Parent: "x"}, // a cycle must not hang
+		"o": {Key: "o", Parent: "missing"},
+	}
+	linkAncestors(byKey)
+	if !byKey["c"].ancestors["a"] || !byKey["c"].ancestors["b"] || len(byKey["a"].ancestors) != 0 || !byKey["o"].ancestors["missing"] {
+		t.Fatalf("ancestors c=%v a=%v o=%v", byKey["c"].ancestors, byKey["a"].ancestors, byKey["o"].ancestors)
+	}
+	if !byKey["c"].isUnder(byKey["a"]) || byKey["a"].isUnder(byKey["c"]) {
+		t.Fatal("isUnder")
+	}
+}
+
 func TestIsDescendant(t *testing.T) {
 	yes := [][2]string{
 		{"TestENG465_E2E07/ENG-465-E2E-07 replayed event", "TestENG465_E2E07"},
@@ -109,6 +125,17 @@ func TestCriterionVerdict(t *testing.T) {
 			"subtest known gap beats passing parent",
 			[]*coverageTest{parentPass, ct("c", "TestENG465_S08/S08 no handover", res("skipped", "TestENG465_S08/S08_no_handover", "known_gap"))},
 			VerdictKnownGap, []string{"c"},
+		},
+		{
+			// The registry's parent link decides, whatever the names say.
+			"subtest by parent link beats its parent",
+			[]*coverageTest{parentPass, {Key: "c", Name: "ENG-465 S08 handover", Parent: "p", Latest: res("skipped", "x", "known_gap")}},
+			VerdictKnownGap, []string{"c"},
+		},
+		{
+			"grandchild by parent links beats its grandparent",
+			[]*coverageTest{parentPass, {Key: "g", Name: "deep", Parent: "mid", ancestors: map[string]bool{"mid": true, "p": true}, Latest: res("failed", "deep", "")}},
+			VerdictFailing, []string{"g"},
 		},
 		{
 			"subtest failure beats passing parent",
@@ -240,5 +267,71 @@ func TestNormalizeGap(t *testing.T) {
 		if !validGapCategory(c) {
 			t.Fatalf("%q should be valid", c)
 		}
+	}
+}
+
+// The Go defects pass decides a defect test: failed there means the defect
+// still reproduces, passed means it is fixed; the gate's skip never reads as
+// a known gap.
+func TestDefectsPassDecidesDefectTests(t *testing.T) {
+	gateSkip := res("skipped", "TestX/defect_2348_foreign_subscriber", "known_gap")
+	cases := []struct {
+		name    string
+		test    *coverageTest
+		want    string
+		fromDef bool
+	}{
+		{"still reproduces", &coverageTest{Key: "k", Name: "TestX/defect 2348 foreign subscriber", Latest: gateSkip,
+			DefectsLatest: res("failed", "defects/TestX/defect_2348_foreign_subscriber", "")}, VerdictDefect, true},
+		{"fixed", &coverageTest{Key: "k", Name: "TestX/defect 2348 foreign subscriber", Latest: gateSkip,
+			DefectsLatest: res("passed", "defects/TestX/defect_2348_foreign_subscriber", "")}, VerdictPassing, true},
+		{"defects pass not run: the gate skip is the defect", &coverageTest{Key: "k", Name: "TestX/defect 2348 foreign subscriber", Latest: gateSkip},
+			VerdictDefect, false},
+		{"a passing gate parent is not decided by its defects-pass run", &coverageTest{Key: "k", Name: "TestX", Latest: res("passed", "TestX", ""),
+			DefectsLatest: res("failed", "defects/TestX", "")}, VerdictPassing, false},
+		{"only the defects pass ran it", &coverageTest{Key: "k", Name: "TestY/S02 clip", DefectsLatest: res("failed", "defects/TestY/S02_clip", "")},
+			VerdictDefect, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			v, r := c.test.outcome()
+			if v != c.want || (r == c.test.DefectsLatest) != c.fromDef {
+				t.Fatalf("got %s from %+v, want %s (from defects pass: %v)", v, r, c.want, c.fromDef)
+			}
+		})
+	}
+	// In a criterion: a subtest decided by the defects pass beats its parent.
+	parent := ct("p", "TestX", res("passed", "TestX", ""))
+	child := cases[0].test
+	if v, by := criterionVerdict([]*coverageTest{parent, child}); v != VerdictDefect || by[0] != "k" {
+		t.Fatalf("criterion = %s %v", v, by)
+	}
+}
+
+// Defects-pass rows never match a gate lookup, and gate rows never match a
+// defects lookup, even with a pattern that would catch both.
+func TestResultIndexKeepsDefectsPassApart(t *testing.T) {
+	now := time.Now()
+	rows := []specRunRow{
+		{ProjectID: "p", SpecName: "defects/TestX/defect_1", Status: "failed", TestRunID: 2, StartTime: now, DefectsPass: true},
+		{ProjectID: "p", SpecName: "TestX/defect_1", Status: "skipped", TestRunID: 1, StartTime: now.Add(-time.Hour)},
+		{ProjectID: "p", SpecName: "TestX", Status: "passed", TestRunID: 1, StartTime: now.Add(-time.Hour)},
+	}
+	var gate, defects resultIndex
+	gate.rows, defects.rows = rows, rows
+	gate.init(func(r specRunRow) bool { return !r.DefectsPass && !strings.HasPrefix(r.SpecName, GoDefectsPrefix) })
+	defects.init(func(r specRunRow) bool { return r.DefectsPass || strings.HasPrefix(r.SpecName, GoDefectsPrefix) })
+
+	if r := gate.match("p", "TestX/defect 1", "exact", ""); r == nil || r.Status != "skipped" {
+		t.Fatalf("gate exact = %+v", r)
+	}
+	if r := gate.match("p", "defect_1$", "regex", ""); r == nil || r.Status != "skipped" || r.TestRunID != 1 {
+		t.Fatalf("gate regex picked a defects-pass row: %+v", r)
+	}
+	if r := defects.match("p", "defects/TestX/defect 1", "exact", ""); r == nil || r.Status != "failed" {
+		t.Fatalf("defects exact = %+v", r)
+	}
+	if r := defects.match("p", "TestX", "exact", ""); r != nil {
+		t.Fatalf("defects lookup matched a gate row: %+v", r)
 	}
 }

@@ -134,6 +134,7 @@ type registryTest struct {
 	MatchName   string         `json:"match_name"`
 	MatchMode   string         `json:"match_mode"` // exact | suffix | regex
 	MatchHint   string         `json:"match_hint"`
+	Parent      string         `json:"parent"` // the parent test's key, for a subtest
 	What        string         `json:"what"`
 	How         string         `json:"how"`
 	Note        string         `json:"note"`
@@ -253,9 +254,9 @@ func (h *CoverageHandler) importRegistry(c *gin.Context) {
 			if mode == "" {
 				mode = "exact"
 			}
-			if err := tx.Exec(`INSERT INTO requirement_test_cases (test_key, repo, framework, file, line, name, fern_project, match_name, match_mode, match_hint, what, how, note, confidence, evidence, url)
-				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, t.Key, t.Repo, t.Framework, t.File, t.Line, t.Name, t.FernProject, t.MatchName, mode, t.MatchHint,
-				t.What, t.How, t.Note, t.Confidence, t.Evidence, t.URL).Error; err != nil {
+			if err := tx.Exec(`INSERT INTO requirement_test_cases (test_key, repo, framework, file, line, name, fern_project, match_name, match_mode, match_hint, what, how, note, confidence, evidence, url, parent_key)
+				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, t.Key, t.Repo, t.Framework, t.File, t.Line, t.Name, t.FernProject, t.MatchName, mode, t.MatchHint,
+				t.What, t.How, t.Note, t.Confidence, t.Evidence, t.URL, t.Parent).Error; err != nil {
 				return err
 			}
 			for _, l := range t.Links {
@@ -318,11 +319,16 @@ type coverageTest struct {
 	URL         string          `json:"url"`
 	Links       []registryLink  `json:"links"`
 	Latest      *CoverageResult `json:"latest"`
-	Verdict     string          `json:"verdict"`  // this test's own verdict (see Verdicts)
-	Metadata    json.RawMessage `json:"metadata"` // stored metadata, kind test
-	matchName   string          `json:"-"`
-	matchMode   string          `json:"-"`
-	matchHint   string          `json:"-"`
+	// DefectsLatest is a Go test's latest result in the defects pass, which
+	// runs what the gate skips for a filed defect.
+	DefectsLatest *CoverageResult `json:"defects_latest"`
+	Parent        string          `json:"parent"`   // the parent test's key, for a subtest
+	Verdict       string          `json:"verdict"`  // this test's own verdict (see Verdicts)
+	Metadata      json.RawMessage `json:"metadata"` // stored metadata, kind test
+	ancestors     map[string]bool // keys of every test above this one
+	matchName     string          `json:"-"`
+	matchMode     string          `json:"-"`
+	matchHint     string          `json:"-"`
 }
 
 type coverageCriterion struct {
@@ -430,9 +436,11 @@ func summarize(specs []coverageSpec, byKey map[string]*coverageTest) coverageSum
 			cr.VerdictFrom = nil
 			if len(cr.DecidedBy) > 0 {
 				src := &verdictSource{TestKey: cr.DecidedBy[0]}
-				if t := byKey[src.TestKey]; t != nil && t.Latest != nil {
-					st := t.Latest.StartTime
-					src.SpecName, src.Status, src.RunID, src.StartTime = t.Latest.SpecName, t.Latest.Status, t.Latest.RunID, &st
+				if t := byKey[src.TestKey]; t != nil {
+					if _, r := t.outcome(); r != nil {
+						st := r.StartTime
+						src.SpecName, src.Status, src.RunID, src.StartTime = r.SpecName, r.Status, r.RunID, &st
+					}
 				}
 				cr.VerdictFrom = src
 			}
@@ -459,6 +467,9 @@ type specRunRow struct {
 	StartTime time.Time
 	Message   string
 	Detail    string // message, description and metadata of a result that did not pass
+	// DefectsPass marks a run of the Go defects pass (test run metadata
+	// pass=defects).
+	DefectsPass bool
 }
 
 // getCoverage returns the registry with each test's latest result.
@@ -484,10 +495,10 @@ func (h *CoverageHandler) getCoverage(c *gin.Context) {
 	var links []struct{ TestKey, SpecKey, CriterionID string }
 	h.db.Raw(`SELECT test_key, spec_key, criterion_id FROM requirement_links ORDER BY test_key, spec_key, criterion_id`).Scan(&links)
 	var rows []struct {
-		TestKey, Repo, Framework, File, Name, FernProject, MatchName, MatchMode, MatchHint, What, How, Note, Confidence, Evidence, URL string
-		Line                                                                                                                           int
+		TestKey, Repo, Framework, File, Name, FernProject, MatchName, MatchMode, MatchHint, What, How, Note, Confidence, Evidence, URL, ParentKey string
+		Line                                                                                                                                      int
 	}
-	h.db.Raw(`SELECT test_key, repo, framework, file, line, name, fern_project, match_name, match_mode, match_hint, what, how, note, confidence, evidence, url
+	h.db.Raw(`SELECT test_key, repo, framework, file, line, name, fern_project, match_name, match_mode, match_hint, what, how, note, confidence, evidence, url, parent_key
 		FROM requirement_test_cases ORDER BY repo, file, line`).Scan(&rows)
 
 	tests := make([]*coverageTest, 0, len(rows))
@@ -496,13 +507,15 @@ func (h *CoverageHandler) getCoverage(c *gin.Context) {
 	for _, r := range rows {
 		t := &coverageTest{Key: r.TestKey, Repo: r.Repo, Framework: r.Framework, File: r.File, Line: r.Line, Name: r.Name,
 			FernProject: r.FernProject, What: r.What, How: r.How, Note: r.Note, Confidence: r.Confidence, Evidence: r.Evidence,
-			URL: r.URL, Links: []registryLink{}, matchName: r.MatchName, matchMode: r.MatchMode, matchHint: r.MatchHint}
+			URL: r.URL, Parent: r.ParentKey, Links: []registryLink{}, matchName: r.MatchName, matchMode: r.MatchMode, matchHint: r.MatchHint}
 		tests = append(tests, t)
 		byKey[t.Key] = t
 		if r.FernProject != "" {
 			projects[r.FernProject] = true
 		}
 	}
+
+	linkAncestors(byKey)
 
 	specIdx := map[string]int{}
 	for i := range specs {
@@ -548,7 +561,7 @@ func (h *CoverageHandler) getCoverage(c *gin.Context) {
 		return
 	}
 	for _, t := range tests {
-		t.Verdict = testVerdict(t.Name, t.Latest)
+		t.Verdict, _ = t.outcome()
 	}
 	summary := summarize(specs, byKey)
 	meta, err := h.loadAllMeta()
@@ -603,7 +616,8 @@ func (h *CoverageHandler) attachResults(tests []*coverageTest, projects map[stri
 	}
 	q := `SELECT tr.project_id, sp.spec_name, sr.suite_name, sp.status, tr.id AS test_run_id, tr.run_id, tr.branch, tr.commit_sha AS git_sha,
 	             COALESCE(sp.start_time, tr.start_time) AS start_time, LEFT(COALESCE(NULLIF(sp.error_message, ''), sp.description, ''), 400) AS message,
-	             CASE WHEN sp.status = 'passed' THEN '' ELSE LEFT(COALESCE(sp.error_message, '') || E'\n' || COALESCE(sp.description, '') || E'\n' || COALESCE(sp.metadata::text, ''), 4000) END AS detail
+	             CASE WHEN sp.status = 'passed' THEN '' ELSE LEFT(COALESCE(sp.error_message, '') || E'\n' || COALESCE(sp.description, '') || E'\n' || COALESCE(sp.metadata::text, ''), 4000) END AS detail,
+	             COALESCE(tr.metadata->>'pass', '') = 'defects' AS defects_pass
 	      FROM spec_runs sp
 	      JOIN suite_runs sr ON sr.id = sp.suite_run_id
 	      JOIN test_runs tr ON tr.id = sr.test_run_id
@@ -619,98 +633,134 @@ func (h *CoverageHandler) attachResults(tests []*coverageTest, projects map[stri
 		return err
 	}
 
-	exact := map[string][]int{} // project\x00name -> row indexes, newest first
-	byProject := map[string][]int{}
-	for i, r := range rows {
-		k := r.ProjectID + "\x00" + r.SpecName
-		exact[k] = append(exact[k], i)
-		byProject[r.ProjectID] = append(byProject[r.ProjectID], i)
-	}
+	// The Go defects pass (test run metadata pass=defects, names prefixed
+	// "defects/") re-runs the subtests the gate skips for a filed defect. Its
+	// results only ever decide a defect test, never anything else.
+	var gate, defects resultIndex
+	gate.rows, defects.rows = rows, rows
+	gate.init(func(r specRunRow) bool { return !r.DefectsPass && !strings.HasPrefix(r.SpecName, GoDefectsPrefix) })
+	defects.init(func(r specRunRow) bool { return r.DefectsPass || strings.HasPrefix(r.SpecName, GoDefectsPrefix) })
 	for _, t := range tests {
 		if t.FernProject == "" || t.matchName == "" {
 			continue
 		}
-		var hits []int
-		if t.matchMode == "regex" {
-			re, err := regexp.Compile(t.matchName)
-			if err != nil {
-				continue
+		t.Latest = gate.match(t.FernProject, t.matchName, t.matchMode, t.matchHint)
+		if t.Framework == "go" {
+			name := GoDefectsPrefix + t.matchName
+			if t.matchMode == "regex" {
+				name = "^" + regexp.QuoteMeta(GoDefectsPrefix) + strings.TrimPrefix(t.matchName, "^")
 			}
-			for _, i := range byProject[t.FernProject] {
-				if re.MatchString(rows[i].SpecName) {
-					hits = append(hits, i)
-				}
-			}
-		} else if t.matchMode == "suffix" {
-			for _, i := range byProject[t.FernProject] {
-				n := rows[i].SpecName
-				if strings.HasSuffix(n, t.matchName) && (t.matchHint == "" || strings.Contains(n+" "+rows[i].SuiteName, t.matchHint)) {
-					hits = append(hits, i)
-				}
-			}
-		} else {
-			hits = exact[t.FernProject+"\x00"+t.matchName]
-			// go test reports a subtest's spaces as underscores.
-			if len(hits) == 0 && strings.Contains(t.matchName, " ") {
-				hits = exact[t.FernProject+"\x00"+strings.ReplaceAll(t.matchName, " ", "_")]
-			}
+			t.DefectsLatest = defects.match(t.FernProject, name, t.matchMode, t.matchHint)
 		}
-		if len(hits) == 0 {
+	}
+	return nil
+}
+
+// GoDefectsPrefix starts every spec_run name of the Go defects pass.
+const GoDefectsPrefix = "defects/"
+
+// resultIndex looks up spec runs by test name. rows are newest first.
+type resultIndex struct {
+	rows      []specRunRow
+	exact     map[string][]int // project\x00name -> row indexes, newest first
+	byProject map[string][]int
+}
+
+func (x *resultIndex) init(keep func(specRunRow) bool) {
+	x.exact, x.byProject = map[string][]int{}, map[string][]int{}
+	for i, r := range x.rows {
+		if !keep(r) {
 			continue
 		}
-		sort.SliceStable(hits, func(a, b int) bool { return rows[hits[a]].StartTime.After(rows[hits[b]].StartTime) })
-		r := rows[hits[0]]
-		// A parametrised test reports several instances per run: the newest
-		// run failed if any of its instances failed.
-		status := r.Status
+		k := r.ProjectID + "\x00" + r.SpecName
+		x.exact[k] = append(x.exact[k], i)
+		x.byProject[r.ProjectID] = append(x.byProject[r.ProjectID], i)
+	}
+}
+
+// match is the latest result of the test named name (exact, suffix or
+// regex) in project, or nil.
+func (x *resultIndex) match(project, name, mode, hint string) *CoverageResult {
+	rows := x.rows
+	var hits []int
+	if mode == "regex" {
+		re, err := regexp.Compile(name)
+		if err != nil {
+			return nil
+		}
+		for _, i := range x.byProject[project] {
+			if re.MatchString(rows[i].SpecName) {
+				hits = append(hits, i)
+			}
+		}
+	} else if mode == "suffix" {
+		for _, i := range x.byProject[project] {
+			n := rows[i].SpecName
+			if strings.HasSuffix(n, name) && (hint == "" || strings.Contains(n+" "+rows[i].SuiteName, hint)) {
+				hits = append(hits, i)
+			}
+		}
+	} else {
+		hits = x.exact[project+"\x00"+name]
+		// go test reports a subtest's spaces as underscores.
+		if len(hits) == 0 && strings.Contains(name, " ") {
+			hits = x.exact[project+"\x00"+strings.ReplaceAll(name, " ", "_")]
+		}
+	}
+	if len(hits) == 0 {
+		return nil
+	}
+	sort.SliceStable(hits, func(a, b int) bool { return rows[hits[a]].StartTime.After(rows[hits[b]].StartTime) })
+	r := rows[hits[0]]
+	// A parametrised test reports several instances per run: the newest
+	// run failed if any of its instances failed.
+	status := r.Status
+	for _, i := range hits {
+		if rows[i].TestRunID != r.TestRunID {
+			break
+		}
+		if rows[i].Status == "failed" {
+			status, r = "failed", rows[i]
+			break
+		}
+	}
+	res := &CoverageResult{Status: status, SpecName: r.SpecName, SuiteName: r.SuiteName, TestRunID: r.TestRunID, RunID: r.RunID,
+		Branch: r.Branch, GitSHA: r.GitSHA, StartTime: r.StartTime, Message: r.Message}
+	if status == "skipped" {
+		// Every skipped instance of the newest run may say why.
 		for _, i := range hits {
 			if rows[i].TestRunID != r.TestRunID {
 				break
 			}
-			if rows[i].Status == "failed" {
-				status, r = "failed", rows[i]
-				break
-			}
-		}
-		res := &CoverageResult{Status: status, SpecName: r.SpecName, SuiteName: r.SuiteName, TestRunID: r.TestRunID, RunID: r.RunID,
-			Branch: r.Branch, GitSHA: r.GitSHA, StartTime: r.StartTime, Message: r.Message}
-		if status == "skipped" {
-			// Every skipped instance of the newest run may say why.
-			for _, i := range hits {
-				if rows[i].TestRunID != r.TestRunID {
+			if rows[i].Status == "skipped" {
+				if m := gapMarker(rows[i].Detail); m != "" {
+					res.GapMarker = m
+					if l := markerLine(rows[i].Detail); l != "" {
+						res.Message = l
+					}
 					break
 				}
-				if rows[i].Status == "skipped" {
-					if m := gapMarker(rows[i].Detail); m != "" {
-						res.GapMarker = m
-						if l := markerLine(rows[i].Detail); l != "" {
-							res.Message = l
-						}
-						break
-					}
-				}
 			}
 		}
-		// Per run: passed only when every matching instance in it passed.
-		perRun := map[uint]string{}
-		order := []uint{}
-		for _, i := range hits {
-			id := rows[i].TestRunID
-			prev, ok := perRun[id]
-			if !ok {
-				order = append(order, id)
-				perRun[id] = rows[i].Status
-			} else if prev == "passed" && rows[i].Status != "passed" {
-				perRun[id] = rows[i].Status
-			}
-		}
-		for _, id := range order {
-			res.Runs++
-			if perRun[id] == "passed" {
-				res.Passed++
-			}
-		}
-		t.Latest = res
 	}
-	return nil
+	// Per run: passed only when every matching instance in it passed.
+	perRun := map[uint]string{}
+	order := []uint{}
+	for _, i := range hits {
+		id := rows[i].TestRunID
+		prev, ok := perRun[id]
+		if !ok {
+			order = append(order, id)
+			perRun[id] = rows[i].Status
+		} else if prev == "passed" && rows[i].Status != "passed" {
+			perRun[id] = rows[i].Status
+		}
+	}
+	for _, id := range order {
+		res.Runs++
+		if perRun[id] == "passed" {
+			res.Passed++
+		}
+	}
+	return res
 }
