@@ -490,16 +490,25 @@ func (h *CoverageHandler) getCoverage(c *gin.Context) {
 		SpecKey, CriterionID, Kind, Title, Quote, BuildStatus, BuildEvidence string
 		GapCategory, GapReason, GapPathway, GapTicket, GapSource             string
 	}
-	h.db.Raw(`SELECT spec_key, criterion_id, kind, title, quote, build_status, build_evidence,
-		gap_category, gap_reason, gap_pathway, gap_ticket, gap_source FROM requirement_criteria ORDER BY spec_key, position`).Scan(&crits)
+	if err := h.db.Raw(`SELECT spec_key, criterion_id, kind, title, quote, build_status, build_evidence,
+		gap_category, gap_reason, gap_pathway, gap_ticket, gap_source FROM requirement_criteria ORDER BY spec_key, position`).Scan(&crits).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	var links []struct{ TestKey, SpecKey, CriterionID string }
-	h.db.Raw(`SELECT test_key, spec_key, criterion_id FROM requirement_links ORDER BY test_key, spec_key, criterion_id`).Scan(&links)
+	if err := h.db.Raw(`SELECT test_key, spec_key, criterion_id FROM requirement_links ORDER BY test_key, spec_key, criterion_id`).Scan(&links).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	var rows []struct {
 		TestKey, Repo, Framework, File, Name, FernProject, MatchName, MatchMode, MatchHint, What, How, Note, Confidence, Evidence, URL, ParentKey string
 		Line                                                                                                                                      int
 	}
-	h.db.Raw(`SELECT test_key, repo, framework, file, line, name, fern_project, match_name, match_mode, match_hint, what, how, note, confidence, evidence, url, parent_key
-		FROM requirement_test_cases ORDER BY repo, file, line`).Scan(&rows)
+	if err := h.db.Raw(`SELECT test_key, repo, framework, file, line, name, fern_project, match_name, match_mode, match_hint, what, how, note, confidence, evidence, url, parent_key
+		FROM requirement_test_cases ORDER BY repo, file, line`).Scan(&rows).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 
 	tests := make([]*coverageTest, 0, len(rows))
 	byKey := map[string]*coverageTest{}

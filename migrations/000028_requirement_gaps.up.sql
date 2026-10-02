@@ -7,6 +7,3 @@ ALTER TABLE requirement_criteria
     ADD COLUMN IF NOT EXISTS gap_ticket   TEXT        NOT NULL DEFAULT '', -- OllyInsurance/olly#N, Linear ENG-N
     ADD COLUMN IF NOT EXISTS gap_source   TEXT        NOT NULL DEFAULT ''; -- file:line of the skip / fixme / defect
 
--- A subtest's parent test (its registry key; empty for a top-level test), so
--- a criterion linked to both takes the subtest's result.
-ALTER TABLE requirement_test_cases ADD COLUMN IF NOT EXISTS parent_key VARCHAR(512) NOT NULL DEFAULT '';
