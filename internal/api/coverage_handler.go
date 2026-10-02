@@ -2,6 +2,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"regexp"
 	"sort"
@@ -38,6 +39,8 @@ func NewCoverageHandler(db *gorm.DB, logger *logging.Logger) *CoverageHandler {
 func (h *CoverageHandler) RegisterRoutes(userGroup *gin.RouterGroup) {
 	userGroup.PUT("/requirements", h.importRegistry)
 	userGroup.GET("/requirements/coverage", h.getCoverage)
+	h.registerMetaRoutes(userGroup)
+	h.registerBoardRoutes(userGroup)
 }
 
 // --- import -------------------------------------------------------------------
@@ -49,6 +52,58 @@ type registryCriterion struct {
 	Quote         string `json:"quote"`
 	BuildStatus   string `json:"build_status"`   // built | partial | not_built ("" = not assessed)
 	BuildEvidence string `json:"build_evidence"` // where in the code, or what is missing
+	// Why the criterion is not proven today and what would prove it. Sent flat
+	// (gap_category, ...) or as the registry's own nested "gap" object.
+	GapCategory string       `json:"gap_category"`
+	GapReason   string       `json:"gap_reason"`
+	GapPathway  string       `json:"gap_pathway"`
+	GapTicket   string       `json:"gap_ticket"`
+	GapSource   string       `json:"gap_source"`
+	Gap         *registryGap `json:"gap"`
+}
+
+// registryGap is the gap object as the registry spec files carry it.
+type registryGap struct {
+	Category string `json:"category"`
+	Reason   string `json:"reason"`
+	Pathway  string `json:"pathway"`
+	Ticket   string `json:"ticket"`
+	Source   string `json:"source"`
+}
+
+// GapCategories are the reasons a criterion can be unproven.
+var GapCategories = []string{"not_built", "awaiting_decision", "external_dependency", "test_infra", "defect"}
+
+func validGapCategory(c string) bool {
+	if c == "" {
+		return true
+	}
+	for _, k := range GapCategories {
+		if k == c {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeGap folds the nested gap object into the flat fields (a flat
+// field that is set wins) and trims them.
+func (cr *registryCriterion) normalizeGap() {
+	if g := cr.Gap; g != nil {
+		pick := func(flat *string, nested string) {
+			if strings.TrimSpace(*flat) == "" {
+				*flat = nested
+			}
+		}
+		pick(&cr.GapCategory, g.Category)
+		pick(&cr.GapReason, g.Reason)
+		pick(&cr.GapPathway, g.Pathway)
+		pick(&cr.GapTicket, g.Ticket)
+		pick(&cr.GapSource, g.Source)
+	}
+	for _, f := range []*string{&cr.GapCategory, &cr.GapReason, &cr.GapPathway, &cr.GapTicket, &cr.GapSource} {
+		*f = strings.TrimSpace(*f)
+	}
 }
 
 type registrySpec struct {
@@ -79,6 +134,7 @@ type registryTest struct {
 	MatchName   string         `json:"match_name"`
 	MatchMode   string         `json:"match_mode"` // exact | suffix | regex
 	MatchHint   string         `json:"match_hint"`
+	Parent      string         `json:"parent"` // the parent test's key, for a subtest
 	What        string         `json:"what"`
 	How         string         `json:"how"`
 	Note        string         `json:"note"`
@@ -118,7 +174,14 @@ func (h *CoverageHandler) importRegistry(c *gin.Context) {
 			return
 		}
 		known[s.Key] = map[string]bool{}
-		for _, cr := range s.Criteria {
+		for k := range s.Criteria {
+			cr := &s.Criteria[k]
+			cr.normalizeGap()
+			if !validGapCategory(cr.GapCategory) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "criterion " + s.Key + " " + cr.ID + " has unknown gap category " + cr.GapCategory +
+					" (want one of " + strings.Join(GapCategories, ", ") + ")"})
+				return
+			}
 			if cr.ID == "" {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "a criterion of " + s.Key + " has no id"})
 				return
@@ -178,8 +241,10 @@ func (h *CoverageHandler) importRegistry(c *gin.Context) {
 				if kind == "" {
 					kind = "ac"
 				}
-				if err := tx.Exec(`INSERT INTO requirement_criteria (spec_key, criterion_id, kind, title, quote, build_status, build_evidence, position) VALUES (?,?,?,?,?,?,?,?)`,
-					s.Key, cr.ID, kind, cr.Title, cr.Quote, cr.BuildStatus, cr.BuildEvidence, j).Error; err != nil {
+				if err := tx.Exec(`INSERT INTO requirement_criteria (spec_key, criterion_id, kind, title, quote, build_status, build_evidence,
+					gap_category, gap_reason, gap_pathway, gap_ticket, gap_source, position) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+					s.Key, cr.ID, kind, cr.Title, cr.Quote, cr.BuildStatus, cr.BuildEvidence,
+					cr.GapCategory, cr.GapReason, cr.GapPathway, cr.GapTicket, cr.GapSource, j).Error; err != nil {
 					return err
 				}
 			}
@@ -189,9 +254,9 @@ func (h *CoverageHandler) importRegistry(c *gin.Context) {
 			if mode == "" {
 				mode = "exact"
 			}
-			if err := tx.Exec(`INSERT INTO requirement_test_cases (test_key, repo, framework, file, line, name, fern_project, match_name, match_mode, match_hint, what, how, note, confidence, evidence, url)
-				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, t.Key, t.Repo, t.Framework, t.File, t.Line, t.Name, t.FernProject, t.MatchName, mode, t.MatchHint,
-				t.What, t.How, t.Note, t.Confidence, t.Evidence, t.URL).Error; err != nil {
+			if err := tx.Exec(`INSERT INTO requirement_test_cases (test_key, repo, framework, file, line, name, fern_project, match_name, match_mode, match_hint, what, how, note, confidence, evidence, url, parent_key)
+				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, t.Key, t.Repo, t.Framework, t.File, t.Line, t.Name, t.FernProject, t.MatchName, mode, t.MatchHint,
+				t.What, t.How, t.Note, t.Confidence, t.Evidence, t.URL, t.Parent).Error; err != nil {
 				return err
 			}
 			for _, l := range t.Links {
@@ -233,6 +298,9 @@ type CoverageResult struct {
 	Message   string    `json:"message,omitempty"`
 	Runs      int       `json:"runs"`   // matching runs in the window
 	Passed    int       `json:"passed"` // of those, passed
+	// GapMarker says why a skipped result was skipped: known_gap (a KNOWN GAP
+	// skip), fixme (a Playwright fixme), known_defect, or "".
+	GapMarker string `json:"gap_marker,omitempty"`
 }
 
 type coverageTest struct {
@@ -251,19 +319,55 @@ type coverageTest struct {
 	URL         string          `json:"url"`
 	Links       []registryLink  `json:"links"`
 	Latest      *CoverageResult `json:"latest"`
-	matchName   string          `json:"-"`
-	matchMode   string          `json:"-"`
-	matchHint   string          `json:"-"`
+	// DefectsLatest is a Go test's latest result in the defects pass, which
+	// runs what the gate skips for a filed defect.
+	DefectsLatest *CoverageResult `json:"defects_latest"`
+	Parent        string          `json:"parent"`   // the parent test's key, for a subtest
+	Verdict       string          `json:"verdict"`  // this test's own verdict (see Verdicts)
+	Metadata      json.RawMessage `json:"metadata"` // stored metadata, kind test
+	ancestors     map[string]bool // keys of every test above this one
+	matchName     string          `json:"-"`
+	matchMode     string          `json:"-"`
+	matchHint     string          `json:"-"`
 }
 
 type coverageCriterion struct {
-	ID            string   `json:"id"`
-	Kind          string   `json:"kind"`
-	Title         string   `json:"title"`
-	Quote         string   `json:"quote"`
-	BuildStatus   string   `json:"build_status"`
-	BuildEvidence string   `json:"build_evidence"`
-	Tests         []string `json:"tests"`
+	ID            string `json:"id"`
+	Kind          string `json:"kind"`
+	Title         string `json:"title"`
+	Quote         string `json:"quote"`
+	BuildStatus   string `json:"build_status"`
+	BuildEvidence string `json:"build_evidence"`
+	// Verdict comes from the most specific linked test result (see Verdicts);
+	// VerdictFrom is the test that set it, nil when no test is linked.
+	Verdict     string          `json:"verdict"`
+	VerdictFrom *verdictSource  `json:"verdict_from"`
+	DecidedBy   []string        `json:"decided_by"`   // every test that set the verdict
+	Gap         *coverageGap    `json:"gap"`          // why it is unproven, from the registry; nil when none
+	Metadata    json.RawMessage `json:"metadata"`     // stored metadata, kind criterion
+	GapMetadata json.RawMessage `json:"gap_metadata"` // stored metadata, kind gap
+	Tests       []string        `json:"tests"`
+
+	gapCategory, gapReason, gapPathway, gapTicket, gapSource string
+}
+
+// coverageGap is a criterion's registry gap: why it is not proven today and
+// the step that would prove it.
+type coverageGap struct {
+	Category string `json:"category"`
+	Reason   string `json:"reason"`
+	Pathway  string `json:"pathway"`
+	Ticket   string `json:"ticket"`
+	Source   string `json:"source"`
+}
+
+// verdictSource names the test result a criterion verdict came from.
+type verdictSource struct {
+	TestKey   string     `json:"test_key"`
+	SpecName  string     `json:"spec_name"`
+	Status    string     `json:"status"`
+	RunID     string     `json:"run_id"`
+	StartTime *time.Time `json:"start_time"`
 }
 
 type coverageSpec struct {
@@ -274,8 +378,81 @@ type coverageSpec struct {
 	State     string              `json:"state"`
 	Author    string              `json:"author"`
 	SyncedAt  *time.Time          `json:"synced_at"`
-	Criteria  []coverageCriterion `json:"criteria"`
-	SpecTests []string            `json:"spec_tests"` // linked to the spec, no single criterion
+	Metadata  json.RawMessage     `json:"metadata" gorm:"-"`
+	Summary   coverageSummary     `json:"summary" gorm:"-"`
+	Criteria  []coverageCriterion `json:"criteria" gorm:"-"`
+	SpecTests []string            `json:"spec_tests" gorm:"-"` // linked to the spec, no single criterion
+}
+
+// coverageSummary counts criteria per verdict, and the unproven ones (every
+// verdict but passing) per gap category; Unexplained have no gap category.
+type coverageSummary struct {
+	Criteria    int            `json:"criteria"`
+	Verdicts    map[string]int `json:"verdicts"`
+	Gaps        map[string]int `json:"gaps"`
+	Unexplained int            `json:"unexplained"`
+}
+
+func newSummary() coverageSummary {
+	g := make(map[string]int, len(GapCategories))
+	for _, k := range GapCategories {
+		g[k] = 0
+	}
+	return coverageSummary{Verdicts: newVerdictCounts(), Gaps: g}
+}
+
+func (s *coverageSummary) add(cr *coverageCriterion) {
+	s.Criteria++
+	s.Verdicts[cr.Verdict]++
+	if cr.Verdict == VerdictPassing {
+		return
+	}
+	if cr.Gap != nil && cr.Gap.Category != "" {
+		s.Gaps[cr.Gap.Category]++
+	} else {
+		s.Unexplained++
+	}
+}
+
+// summarize sets every criterion's verdict and gap, and the counts per spec
+// and overall.
+func summarize(specs []coverageSpec, byKey map[string]*coverageTest) coverageSummary {
+	sum := newSummary()
+	for i := range specs {
+		s := &specs[i]
+		s.Summary = newSummary()
+		for j := range s.Criteria {
+			cr := &s.Criteria[j]
+			ts := make([]*coverageTest, 0, len(cr.Tests))
+			for _, k := range cr.Tests {
+				if t := byKey[k]; t != nil {
+					ts = append(ts, t)
+				}
+			}
+			cr.Verdict, cr.DecidedBy = criterionVerdict(ts)
+			if cr.DecidedBy == nil {
+				cr.DecidedBy = []string{}
+			}
+			cr.VerdictFrom = nil
+			if len(cr.DecidedBy) > 0 {
+				src := &verdictSource{TestKey: cr.DecidedBy[0]}
+				if t := byKey[src.TestKey]; t != nil {
+					if _, r := t.outcome(); r != nil {
+						st := r.StartTime
+						src.SpecName, src.Status, src.RunID, src.StartTime = r.SpecName, r.Status, r.RunID, &st
+					}
+				}
+				cr.VerdictFrom = src
+			}
+			cr.Gap = nil
+			if cr.gapCategory+cr.gapReason+cr.gapPathway+cr.gapTicket+cr.gapSource != "" {
+				cr.Gap = &coverageGap{Category: cr.gapCategory, Reason: cr.gapReason, Pathway: cr.gapPathway, Ticket: cr.gapTicket, Source: cr.gapSource}
+			}
+			s.Summary.add(cr)
+			sum.add(cr)
+		}
+	}
+	return sum
 }
 
 type specRunRow struct {
@@ -289,6 +466,10 @@ type specRunRow struct {
 	GitSHA    string
 	StartTime time.Time
 	Message   string
+	Detail    string // message, description and metadata of a result that did not pass
+	// DefectsPass marks a run of the Go defects pass (test run metadata
+	// pass=defects).
+	DefectsPass bool
 }
 
 // getCoverage returns the registry with each test's latest result.
@@ -307,16 +488,27 @@ func (h *CoverageHandler) getCoverage(c *gin.Context) {
 	}
 	var crits []struct {
 		SpecKey, CriterionID, Kind, Title, Quote, BuildStatus, BuildEvidence string
+		GapCategory, GapReason, GapPathway, GapTicket, GapSource             string
 	}
-	h.db.Raw(`SELECT spec_key, criterion_id, kind, title, quote, build_status, build_evidence FROM requirement_criteria ORDER BY spec_key, position`).Scan(&crits)
+	if err := h.db.Raw(`SELECT spec_key, criterion_id, kind, title, quote, build_status, build_evidence,
+		gap_category, gap_reason, gap_pathway, gap_ticket, gap_source FROM requirement_criteria ORDER BY spec_key, position`).Scan(&crits).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	var links []struct{ TestKey, SpecKey, CriterionID string }
-	h.db.Raw(`SELECT test_key, spec_key, criterion_id FROM requirement_links ORDER BY test_key, spec_key, criterion_id`).Scan(&links)
-	var rows []struct {
-		TestKey, Repo, Framework, File, Name, FernProject, MatchName, MatchMode, MatchHint, What, How, Note, Confidence, Evidence, URL string
-		Line                                                                                                                           int
+	if err := h.db.Raw(`SELECT test_key, spec_key, criterion_id FROM requirement_links ORDER BY test_key, spec_key, criterion_id`).Scan(&links).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
-	h.db.Raw(`SELECT test_key, repo, framework, file, line, name, fern_project, match_name, match_mode, match_hint, what, how, note, confidence, evidence, url
-		FROM requirement_test_cases ORDER BY repo, file, line`).Scan(&rows)
+	var rows []struct {
+		TestKey, Repo, Framework, File, Name, FernProject, MatchName, MatchMode, MatchHint, What, How, Note, Confidence, Evidence, URL, ParentKey string
+		Line                                                                                                                                      int
+	}
+	if err := h.db.Raw(`SELECT test_key, repo, framework, file, line, name, fern_project, match_name, match_mode, match_hint, what, how, note, confidence, evidence, url, parent_key
+		FROM requirement_test_cases ORDER BY repo, file, line`).Scan(&rows).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 
 	tests := make([]*coverageTest, 0, len(rows))
 	byKey := map[string]*coverageTest{}
@@ -324,13 +516,15 @@ func (h *CoverageHandler) getCoverage(c *gin.Context) {
 	for _, r := range rows {
 		t := &coverageTest{Key: r.TestKey, Repo: r.Repo, Framework: r.Framework, File: r.File, Line: r.Line, Name: r.Name,
 			FernProject: r.FernProject, What: r.What, How: r.How, Note: r.Note, Confidence: r.Confidence, Evidence: r.Evidence,
-			URL: r.URL, Links: []registryLink{}, matchName: r.MatchName, matchMode: r.MatchMode, matchHint: r.MatchHint}
+			URL: r.URL, Parent: r.ParentKey, Links: []registryLink{}, matchName: r.MatchName, matchMode: r.MatchMode, matchHint: r.MatchHint}
 		tests = append(tests, t)
 		byKey[t.Key] = t
 		if r.FernProject != "" {
 			projects[r.FernProject] = true
 		}
 	}
+
+	linkAncestors(byKey)
 
 	specIdx := map[string]int{}
 	for i := range specs {
@@ -346,7 +540,8 @@ func (h *CoverageHandler) getCoverage(c *gin.Context) {
 		}
 		critIdx[cr.SpecKey+"\x00"+cr.CriterionID] = len(specs[i].Criteria)
 		specs[i].Criteria = append(specs[i].Criteria, coverageCriterion{ID: cr.CriterionID, Kind: cr.Kind, Title: cr.Title, Quote: cr.Quote,
-			BuildStatus: cr.BuildStatus, BuildEvidence: cr.BuildEvidence, Tests: []string{}})
+			BuildStatus: cr.BuildStatus, BuildEvidence: cr.BuildEvidence, gapCategory: cr.GapCategory, gapReason: cr.GapReason,
+			gapPathway: cr.GapPathway, gapTicket: cr.GapTicket, gapSource: cr.GapSource, Tests: []string{}})
 	}
 	for _, l := range links {
 		i, ok := specIdx[l.SpecKey]
@@ -374,6 +569,27 @@ func (h *CoverageHandler) getCoverage(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	for _, t := range tests {
+		t.Verdict, _ = t.outcome()
+	}
+	summary := summarize(specs, byKey)
+	meta, err := h.loadAllMeta()
+	if err != nil {
+		h.logger.WithError(err).Error("coverage metadata lookup failed")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	for i := range specs {
+		specs[i].Metadata = meta.get(MetaSpec, specs[i].Key)
+		for j := range specs[i].Criteria {
+			cr := &specs[i].Criteria[j]
+			k := specs[i].Key + ":" + cr.ID
+			cr.Metadata, cr.GapMetadata = meta.get(MetaCriterion, k), meta.get(MetaGap, k)
+		}
+	}
+	for _, t := range tests {
+		t.Metadata = meta.get(MetaTest, t.Key)
+	}
 
 	var imp struct {
 		Source     string
@@ -387,6 +603,7 @@ func (h *CoverageHandler) getCoverage(c *gin.Context) {
 		"branch":       branch,
 		"days":         days,
 		"import":       gin.H{"source": imp.Source, "git_sha": imp.GitSHA, "imported_at": imp.ImportedAt},
+		"summary":      summary,
 		"specs":        specs,
 		"tests":        tests,
 	})
@@ -407,7 +624,9 @@ func (h *CoverageHandler) attachResults(tests []*coverageTest, projects map[stri
 		ps = append(ps, p)
 	}
 	q := `SELECT tr.project_id, sp.spec_name, sr.suite_name, sp.status, tr.id AS test_run_id, tr.run_id, tr.branch, tr.commit_sha AS git_sha,
-	             COALESCE(sp.start_time, tr.start_time) AS start_time, LEFT(COALESCE(NULLIF(sp.error_message, ''), sp.description, ''), 400) AS message
+	             COALESCE(sp.start_time, tr.start_time) AS start_time, LEFT(COALESCE(NULLIF(sp.error_message, ''), sp.description, ''), 400) AS message,
+	             CASE WHEN sp.status = 'passed' THEN '' ELSE LEFT(COALESCE(sp.error_message, '') || E'\n' || COALESCE(sp.description, '') || E'\n' || COALESCE(sp.metadata::text, ''), 4000) END AS detail,
+	             COALESCE(tr.metadata->>'pass', '') = 'defects' AS defects_pass
 	      FROM spec_runs sp
 	      JOIN suite_runs sr ON sr.id = sp.suite_run_id
 	      JOIN test_runs tr ON tr.id = sr.test_run_id
@@ -423,77 +642,134 @@ func (h *CoverageHandler) attachResults(tests []*coverageTest, projects map[stri
 		return err
 	}
 
-	exact := map[string][]int{} // project\x00name -> row indexes, newest first
-	byProject := map[string][]int{}
-	for i, r := range rows {
-		k := r.ProjectID + "\x00" + r.SpecName
-		exact[k] = append(exact[k], i)
-		byProject[r.ProjectID] = append(byProject[r.ProjectID], i)
-	}
+	// The Go defects pass (test run metadata pass=defects, names prefixed
+	// "defects/") re-runs the subtests the gate skips for a filed defect. Its
+	// results only ever decide a defect test, never anything else.
+	var gate, defects resultIndex
+	gate.rows, defects.rows = rows, rows
+	gate.init(func(r specRunRow) bool { return !r.DefectsPass && !strings.HasPrefix(r.SpecName, GoDefectsPrefix) })
+	defects.init(func(r specRunRow) bool { return r.DefectsPass || strings.HasPrefix(r.SpecName, GoDefectsPrefix) })
 	for _, t := range tests {
 		if t.FernProject == "" || t.matchName == "" {
 			continue
 		}
-		var hits []int
-		if t.matchMode == "regex" {
-			re, err := regexp.Compile(t.matchName)
-			if err != nil {
-				continue
+		t.Latest = gate.match(t.FernProject, t.matchName, t.matchMode, t.matchHint)
+		if t.Framework == "go" {
+			name := GoDefectsPrefix + t.matchName
+			if t.matchMode == "regex" {
+				name = "^" + regexp.QuoteMeta(GoDefectsPrefix) + strings.TrimPrefix(t.matchName, "^")
 			}
-			for _, i := range byProject[t.FernProject] {
-				if re.MatchString(rows[i].SpecName) {
-					hits = append(hits, i)
-				}
-			}
-		} else if t.matchMode == "suffix" {
-			for _, i := range byProject[t.FernProject] {
-				n := rows[i].SpecName
-				if strings.HasSuffix(n, t.matchName) && (t.matchHint == "" || strings.Contains(n+" "+rows[i].SuiteName, t.matchHint)) {
-					hits = append(hits, i)
-				}
-			}
-		} else {
-			hits = exact[t.FernProject+"\x00"+t.matchName]
+			t.DefectsLatest = defects.match(t.FernProject, name, t.matchMode, t.matchHint)
 		}
-		if len(hits) == 0 {
+	}
+	return nil
+}
+
+// GoDefectsPrefix starts every spec_run name of the Go defects pass.
+const GoDefectsPrefix = "defects/"
+
+// resultIndex looks up spec runs by test name. rows are newest first.
+type resultIndex struct {
+	rows      []specRunRow
+	exact     map[string][]int // project\x00name -> row indexes, newest first
+	byProject map[string][]int
+}
+
+func (x *resultIndex) init(keep func(specRunRow) bool) {
+	x.exact, x.byProject = map[string][]int{}, map[string][]int{}
+	for i, r := range x.rows {
+		if !keep(r) {
 			continue
 		}
-		sort.SliceStable(hits, func(a, b int) bool { return rows[hits[a]].StartTime.After(rows[hits[b]].StartTime) })
-		r := rows[hits[0]]
-		// A parametrised test reports several instances per run: the newest
-		// run failed if any of its instances failed.
-		status := r.Status
+		k := r.ProjectID + "\x00" + r.SpecName
+		x.exact[k] = append(x.exact[k], i)
+		x.byProject[r.ProjectID] = append(x.byProject[r.ProjectID], i)
+	}
+}
+
+// match is the latest result of the test named name (exact, suffix or
+// regex) in project, or nil.
+func (x *resultIndex) match(project, name, mode, hint string) *CoverageResult {
+	rows := x.rows
+	var hits []int
+	if mode == "regex" {
+		re, err := regexp.Compile(name)
+		if err != nil {
+			return nil
+		}
+		for _, i := range x.byProject[project] {
+			if re.MatchString(rows[i].SpecName) {
+				hits = append(hits, i)
+			}
+		}
+	} else if mode == "suffix" {
+		for _, i := range x.byProject[project] {
+			n := rows[i].SpecName
+			if strings.HasSuffix(n, name) && (hint == "" || strings.Contains(n+" "+rows[i].SuiteName, hint)) {
+				hits = append(hits, i)
+			}
+		}
+	} else {
+		hits = x.exact[project+"\x00"+name]
+		// go test reports a subtest's spaces as underscores.
+		if len(hits) == 0 && strings.Contains(name, " ") {
+			hits = x.exact[project+"\x00"+strings.ReplaceAll(name, " ", "_")]
+		}
+	}
+	if len(hits) == 0 {
+		return nil
+	}
+	sort.SliceStable(hits, func(a, b int) bool { return rows[hits[a]].StartTime.After(rows[hits[b]].StartTime) })
+	r := rows[hits[0]]
+	// A parametrised test reports several instances per run: the newest
+	// run failed if any of its instances failed.
+	status := r.Status
+	for _, i := range hits {
+		if rows[i].TestRunID != r.TestRunID {
+			break
+		}
+		if rows[i].Status == "failed" {
+			status, r = "failed", rows[i]
+			break
+		}
+	}
+	res := &CoverageResult{Status: status, SpecName: r.SpecName, SuiteName: r.SuiteName, TestRunID: r.TestRunID, RunID: r.RunID,
+		Branch: r.Branch, GitSHA: r.GitSHA, StartTime: r.StartTime, Message: r.Message}
+	if status == "skipped" {
+		// Every skipped instance of the newest run may say why.
 		for _, i := range hits {
 			if rows[i].TestRunID != r.TestRunID {
 				break
 			}
-			if rows[i].Status == "failed" {
-				status, r = "failed", rows[i]
-				break
+			if rows[i].Status == "skipped" {
+				if m := gapMarker(rows[i].Detail); m != "" {
+					res.GapMarker = m
+					if l := markerLine(rows[i].Detail); l != "" {
+						res.Message = l
+					}
+					break
+				}
 			}
 		}
-		res := &CoverageResult{Status: status, SpecName: r.SpecName, SuiteName: r.SuiteName, TestRunID: r.TestRunID, RunID: r.RunID,
-			Branch: r.Branch, GitSHA: r.GitSHA, StartTime: r.StartTime, Message: r.Message}
-		// Per run: passed only when every matching instance in it passed.
-		perRun := map[uint]string{}
-		order := []uint{}
-		for _, i := range hits {
-			id := rows[i].TestRunID
-			prev, ok := perRun[id]
-			if !ok {
-				order = append(order, id)
-				perRun[id] = rows[i].Status
-			} else if prev == "passed" && rows[i].Status != "passed" {
-				perRun[id] = rows[i].Status
-			}
-		}
-		for _, id := range order {
-			res.Runs++
-			if perRun[id] == "passed" {
-				res.Passed++
-			}
-		}
-		t.Latest = res
 	}
-	return nil
+	// Per run: passed only when every matching instance in it passed.
+	perRun := map[uint]string{}
+	order := []uint{}
+	for _, i := range hits {
+		id := rows[i].TestRunID
+		prev, ok := perRun[id]
+		if !ok {
+			order = append(order, id)
+			perRun[id] = rows[i].Status
+		} else if prev == "passed" && rows[i].Status != "passed" {
+			perRun[id] = rows[i].Status
+		}
+	}
+	for _, id := range order {
+		res.Runs++
+		if perRun[id] == "passed" {
+			res.Passed++
+		}
+	}
+	return res
 }
