@@ -16,7 +16,7 @@ import (
 	"github.com/guidewire-oss/fern-platform/pkg/logging"
 )
 
-// SQLite twins of migrations 000027-000029: the routes use only SQL both
+// SQLite twins of migrations 000027-000032: the routes use only SQL both
 // databases speak, so they run here against a real database with no server.
 var coverageTestDDL = []string{
 	`CREATE TABLE requirement_specs (spec_key TEXT PRIMARY KEY, source TEXT NOT NULL DEFAULT 'linear', title TEXT NOT NULL, url TEXT NOT NULL DEFAULT '',
@@ -40,6 +40,9 @@ var coverageTestDDL = []string{
 		start_date TEXT NOT NULL DEFAULT '', end_date TEXT NOT NULL DEFAULT '', depends_on TEXT NOT NULL DEFAULT '[]', bucket TEXT NOT NULL DEFAULT '',
 		refs TEXT NOT NULL DEFAULT '[]', metadata TEXT NOT NULL DEFAULT '{}', sort REAL NOT NULL DEFAULT 0, created_at DATETIME, updated_at DATETIME,
 		updated_by TEXT NOT NULL DEFAULT '')`,
+	`CREATE TABLE coverage_snapshots (snapshot_date DATE NOT NULL, spec_key TEXT NOT NULL, criterion_id TEXT NOT NULL, kind TEXT NOT NULL DEFAULT '',
+		spec_title TEXT NOT NULL DEFAULT '', verdict TEXT NOT NULL, gap_category TEXT NOT NULL DEFAULT '', build_status TEXT NOT NULL DEFAULT '',
+		taken_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (snapshot_date, spec_key, criterion_id))`,
 }
 
 type covEnv struct {
