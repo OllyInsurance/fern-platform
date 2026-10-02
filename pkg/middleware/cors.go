@@ -28,6 +28,8 @@ func DefaultCORSConfig() CORSConfig {
 			"https://localhost:3000",
 			"https://localhost:3001",
 			"https://localhost:8080",
+			// Ollyverse renders the requirements coverage UI from this API.
+			"https://ollyverse.dev.hiolly.com",
 		},
 		AllowMethods: []string{
 			"GET",
@@ -46,6 +48,7 @@ func DefaultCORSConfig() CORSConfig {
 			"X-Requested-With",
 			"X-Request-ID",
 			"X-User-ID",
+			"X-Olly-User", // who made a coverage metadata / board write
 			"Accept",
 			"Accept-Encoding",
 			"Accept-Language",
