@@ -117,6 +117,9 @@ func main() {
 	snapCtx, stopSnaps := context.WithCancel(context.Background())
 	defer stopSnaps()
 	coverageHandler.StartSnapshots(snapCtx)
+	// Serve the coverage roll-up from built responses, rebuilt on any write.
+	coverageHandler.EnableCache(snapCtx)
+	router.Use(coverageHandler.InvalidateOnWrite())
 	// CI runs: list, tree, trends, compare; the summary refreshes on ingest.
 	runsStore := api.NewRunsStore(db.DB, logger)
 	runsCtx, stopRuns := context.WithCancel(context.Background())

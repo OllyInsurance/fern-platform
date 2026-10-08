@@ -27,7 +27,8 @@ import (
 type CoverageHandler struct {
 	*BaseHandler
 	db     *gorm.DB
-	snapMu sync.Mutex // one snapshot write at a time
+	snapMu sync.Mutex     // one snapshot write at a time
+	cache  *coverageCache // built responses, nil when off (see EnableCache)
 }
 
 // NewCoverageHandler creates a new requirements coverage handler.
@@ -307,6 +308,9 @@ type CoverageResult struct {
 	// GapMarker says why a skipped result was skipped: known_gap (a KNOWN GAP
 	// skip), fixme (a Playwright fixme), known_defect, or "".
 	GapMarker string `json:"gap_marker,omitempty"`
+	// VideoURL is the recording a spec run of this name carries in the same
+	// test run ("" when none), so a page needs no per-run lookups.
+	VideoURL string `json:"video_url"`
 }
 
 type coverageTest struct {
@@ -486,19 +490,28 @@ func (h *CoverageHandler) getCoverage(c *gin.Context) {
 	if days <= 0 || days > 365 {
 		days = DefaultCoverageDays
 	}
-
-	rep, err := h.computeCoverage(branch, days)
+	if h.serveCached(c, branch, days) {
+		return
+	}
+	body, err := h.coverageBody(branch, days)
 	if err != nil {
 		h.logger.WithError(err).Error("coverage lookup failed")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	c.JSON(http.StatusOK, body)
+}
+
+// coverageBody computes the GET /requirements/coverage response.
+func (h *CoverageHandler) coverageBody(branch string, days int) (gin.H, error) {
+	rep, err := h.computeCoverage(branch, days)
+	if err != nil {
+		return nil, err
+	}
 	specs, tests := rep.specs, rep.tests
 	meta, err := h.loadAllMeta()
 	if err != nil {
-		h.logger.WithError(err).Error("coverage metadata lookup failed")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		return nil, err
 	}
 	for i := range specs {
 		specs[i].Metadata = meta.get(MetaSpec, specs[i].Key)
@@ -519,7 +532,7 @@ func (h *CoverageHandler) getCoverage(c *gin.Context) {
 	}
 	h.db.Raw(`SELECT source, git_sha, imported_at FROM requirement_imports ORDER BY id DESC LIMIT 1`).Scan(&imp)
 
-	c.JSON(http.StatusOK, gin.H{
+	return gin.H{
 		"generated_at": time.Now().UTC(),
 		"branch":       branch,
 		"days":         days,
@@ -527,7 +540,7 @@ func (h *CoverageHandler) getCoverage(c *gin.Context) {
 		"summary":      rep.summary,
 		"specs":        specs,
 		"tests":        tests,
-	})
+	}, nil
 }
 
 // The window the coverage page reads by default, and the one a snapshot
@@ -688,6 +701,50 @@ func (h *CoverageHandler) attachResults(tests []*coverageTest, projects map[stri
 				name = "^" + regexp.QuoteMeta(GoDefectsPrefix) + strings.TrimPrefix(t.matchName, "^")
 			}
 			t.DefectsLatest = defects.match(t.FernProject, name, t.matchMode, t.matchHint)
+		}
+	}
+	return h.attachVideos(tests)
+}
+
+// attachVideos sets each latest result's video: of the spec runs with that
+// name in that test run that carry one, the last in suite then spec order
+// (what listing the run's suites and spec runs and keeping the last video per
+// name gives).
+func (h *CoverageHandler) attachVideos(tests []*coverageTest) error {
+	runSet, nameSet := map[uint]bool{}, map[string]bool{}
+	for _, t := range tests {
+		if r := t.Latest; r != nil && r.SpecName != "" {
+			runSet[r.TestRunID], nameSet[r.SpecName] = true, true
+		}
+	}
+	if len(runSet) == 0 {
+		return nil
+	}
+	runs := make([]uint, 0, len(runSet))
+	for id := range runSet {
+		runs = append(runs, id)
+	}
+	names := make([]string, 0, len(nameSet))
+	for n := range nameSet {
+		names = append(names, n)
+	}
+	var rows []struct {
+		TestRunID uint
+		SpecName  string
+		VideoURL  string
+	}
+	if err := h.db.Raw(`SELECT sr.test_run_id, sp.spec_name, sp.video_url FROM spec_runs sp JOIN suite_runs sr ON sr.id = sp.suite_run_id
+		WHERE sr.test_run_id IN ? AND sp.spec_name IN ? AND sp.video_url <> '' AND sp.deleted_at IS NULL AND sr.deleted_at IS NULL
+		ORDER BY sr.id, sp.id`, runs, names).Scan(&rows).Error; err != nil {
+		return err
+	}
+	video := map[string]string{}
+	for _, r := range rows {
+		video[strconv.FormatUint(uint64(r.TestRunID), 10)+"\x00"+r.SpecName] = r.VideoURL
+	}
+	for _, t := range tests {
+		if r := t.Latest; r != nil {
+			r.VideoURL = video[strconv.FormatUint(uint64(r.TestRunID), 10)+"\x00"+r.SpecName]
 		}
 	}
 	return nil
