@@ -29,6 +29,10 @@ type CoverageHandler struct {
 	db     *gorm.DB
 	snapMu sync.Mutex     // one snapshot write at a time
 	cache  *coverageCache // built responses, nil when off (see EnableCache)
+	// faults keeps each classified failed spec run's environment fault
+	// across builds (a stored result does not change).
+	faultMu sync.Mutex
+	faults  map[int64]string
 }
 
 // NewCoverageHandler creates a new requirements coverage handler.
@@ -303,7 +307,7 @@ type CoverageResult struct {
 	GitSHA    string    `json:"git_sha"`
 	StartTime time.Time `json:"start_time"`
 	Message   string    `json:"message,omitempty"`
-	Runs      int       `json:"runs"`   // matching runs in the window
+	Runs      int       `json:"runs"`   // matching runs in the window that decided (not inconclusive)
 	Passed    int       `json:"passed"` // of those, passed
 	// GapMarker says why a skipped result was skipped: known_gap (a KNOWN GAP
 	// skip), fixme (a Playwright fixme), known_defect, or "".
@@ -332,13 +336,20 @@ type coverageTest struct {
 	// DefectsLatest is a Go test's latest result in the defects pass, which
 	// runs what the gate skips for a filed defect.
 	DefectsLatest *CoverageResult `json:"defects_latest"`
-	Parent        string          `json:"parent"`   // the parent test's key, for a subtest
-	Verdict       string          `json:"verdict"`  // this test's own verdict (see Verdicts)
-	Metadata      json.RawMessage `json:"metadata"` // stored metadata, kind test
-	ancestors     map[string]bool // keys of every test above this one
-	matchName     string          `json:"-"`
-	matchMode     string          `json:"-"`
-	matchHint     string          `json:"-"`
+	Parent        string          `json:"parent"`  // the parent test's key, for a subtest
+	Verdict       string          `json:"verdict"` // this test's own verdict (see Verdicts)
+	// Inconclusive counts the runs newer than Latest (or DefectsLatest) whose
+	// result failed because the environment was broken (see envFault). They
+	// decide nothing: Latest is the newest decided result in the window.
+	// InconclusiveReason and InconclusiveRun describe the newest of them.
+	Inconclusive       int             `json:"inconclusive"`
+	InconclusiveReason string          `json:"inconclusive_reason"`
+	InconclusiveRun    *verdictSource  `json:"inconclusive_run"`
+	Metadata           json.RawMessage `json:"metadata"` // stored metadata, kind test
+	ancestors          map[string]bool // keys of every test above this one
+	matchName          string          `json:"-"`
+	matchMode          string          `json:"-"`
+	matchHint          string          `json:"-"`
 }
 
 type coverageCriterion struct {
@@ -477,6 +488,11 @@ type specRunRow struct {
 	StartTime time.Time
 	Message   string
 	Detail    string // message, description and metadata of a result that did not pass
+	ID        int64  // the spec run
+	// EnvHealth and EnvReason are the test run's own environment marker
+	// (metadata env_health, env_health_reason).
+	EnvHealth string
+	EnvReason string
 	// DefectsPass marks a run of the Go defects pass (test run metadata
 	// pass=defects).
 	DefectsPass bool
@@ -664,10 +680,11 @@ func (h *CoverageHandler) attachResults(tests []*coverageTest, projects map[stri
 	for p := range projects {
 		ps = append(ps, p)
 	}
-	q := `SELECT tr.project_id, sp.spec_name, sr.suite_name, sp.status, tr.id AS test_run_id, tr.run_id, tr.branch, tr.commit_sha AS git_sha,
+	q := `SELECT sp.id, tr.project_id, sp.spec_name, sr.suite_name, sp.status, tr.id AS test_run_id, tr.run_id, tr.branch, tr.commit_sha AS git_sha,
 	             COALESCE(sp.start_time, tr.start_time) AS start_time, LEFT(COALESCE(NULLIF(sp.error_message, ''), sp.description, ''), 400) AS message,
 	             CASE WHEN sp.status = 'passed' THEN '' ELSE LEFT(COALESCE(sp.error_message, '') || E'\n' || COALESCE(sp.description, '') || E'\n' || COALESCE(sp.metadata::text, ''), 4000) END AS detail,
-	             COALESCE(tr.metadata->>'pass', '') = 'defects' AS defects_pass
+	             COALESCE(tr.metadata->>'pass', '') = 'defects' AS defects_pass,
+	             COALESCE(tr.metadata->>'env_health', '') AS env_health, COALESCE(tr.metadata->>'env_health_reason', '') AS env_reason
 	      FROM spec_runs sp
 	      JOIN suite_runs sr ON sr.id = sp.suite_run_id
 	      JOIN test_runs tr ON tr.id = sr.test_run_id
@@ -690,20 +707,104 @@ func (h *CoverageHandler) attachResults(tests []*coverageTest, projects map[stri
 	gate.rows, defects.rows = rows, rows
 	gate.init(func(r specRunRow) bool { return !r.DefectsPass && !strings.HasPrefix(r.SpecName, GoDefectsPrefix) })
 	defects.init(func(r specRunRow) bool { return r.DefectsPass || strings.HasPrefix(r.SpecName, GoDefectsPrefix) })
-	for _, t := range tests {
-		if t.FernProject == "" || t.matchName == "" {
-			continue
-		}
-		t.Latest = gate.match(t.FernProject, t.matchName, t.matchMode, t.matchHint)
-		if t.Framework == "go" {
-			name := GoDefectsPrefix + t.matchName
-			if t.matchMode == "regex" {
-				name = "^" + regexp.QuoteMeta(GoDefectsPrefix) + strings.TrimPrefix(t.matchName, "^")
+
+	// A failed result is inconclusive when its full error shows an
+	// environment fault. The full text is large, so it is fetched only for
+	// the failures a lookup reaches: each round classifies what the last one
+	// asked for, until no lookup needs more (a skipped inconclusive run makes
+	// the next older one the candidate).
+	faults := h.knownFaults()
+	gate.faults, defects.faults = faults, faults
+	defer h.keepFaults(faults)
+	for round := 0; ; round++ {
+		pending := map[int64]bool{}
+		gate.pending, defects.pending = pending, pending
+		for _, t := range tests {
+			t.Latest, t.DefectsLatest = nil, nil
+			t.Inconclusive, t.InconclusiveReason, t.InconclusiveRun = 0, "", nil
+			if t.FernProject == "" || t.matchName == "" {
+				continue
 			}
-			t.DefectsLatest = defects.match(t.FernProject, name, t.matchMode, t.matchHint)
+			var inc inconclusiveRuns
+			t.Latest, inc = gate.lookup(t.FernProject, t.matchName, t.matchMode, t.matchHint)
+			if t.Framework == "go" {
+				name := GoDefectsPrefix + t.matchName
+				if t.matchMode == "regex" {
+					name = "^" + regexp.QuoteMeta(GoDefectsPrefix) + strings.TrimPrefix(t.matchName, "^")
+				}
+				var dinc inconclusiveRuns
+				t.DefectsLatest, dinc = defects.lookup(t.FernProject, name, t.matchMode, t.matchHint)
+				inc.add(dinc)
+			}
+			t.Inconclusive, t.InconclusiveReason, t.InconclusiveRun = inc.count, inc.reason, inc.newest
+		}
+		if len(pending) == 0 {
+			break
+		}
+		if round >= maxFaultRounds {
+			// Never expected: each round classifies every failure it reached.
+			h.logger.Error("coverage: inconclusive classification did not settle")
+			break
+		}
+		if err := h.classifyFailures(pending, faults); err != nil {
+			return err
 		}
 	}
 	return h.attachVideos(tests)
+}
+
+// knownFaults is a copy of the faults classified by earlier builds.
+func (h *CoverageHandler) knownFaults() map[int64]string {
+	h.faultMu.Lock()
+	defer h.faultMu.Unlock()
+	m := make(map[int64]string, len(h.faults))
+	for k, v := range h.faults {
+		m[k] = v
+	}
+	return m
+}
+
+// keepFaults stores a build's classified faults for the next build.
+func (h *CoverageHandler) keepFaults(m map[int64]string) {
+	const maxKept = 200000
+	if len(m) > maxKept {
+		return
+	}
+	h.faultMu.Lock()
+	h.faults = m
+	h.faultMu.Unlock()
+}
+
+// maxFaultRounds bounds the classification rounds of attachResults, and
+// lookahead is how many runs past an unclassified failure a lookup queues.
+const (
+	maxFaultRounds = 50
+	lookahead      = 8
+)
+
+// classifyFailures reads the full error of each pending failed spec run and
+// records its environment fault ("" for a product failure) in faults.
+func (h *CoverageHandler) classifyFailures(pending map[int64]bool, faults map[int64]string) error {
+	ids := make([]int64, 0, len(pending))
+	for id := range pending {
+		ids = append(ids, id)
+		faults[id] = "" // a row that vanished is a product failure
+	}
+	const batch = 500
+	for i := 0; i < len(ids); i += batch {
+		var rows []struct {
+			ID   int64
+			Text string
+		}
+		if err := h.db.Raw(`SELECT id, COALESCE(error_message, '') || E'\n' || COALESCE(stack_trace, '') AS text FROM spec_runs WHERE id IN ?`,
+			ids[i:min(i+batch, len(ids))]).Scan(&rows).Error; err != nil {
+			return err
+		}
+		for _, r := range rows {
+			faults[r.ID] = envFault(r.Text)
+		}
+	}
+	return nil
 }
 
 // attachVideos sets each latest result's video: of the spec runs with that
@@ -758,6 +859,48 @@ type resultIndex struct {
 	rows      []specRunRow
 	exact     map[string][]int // project\x00name -> row indexes, newest first
 	byProject map[string][]int
+	// faults holds the environment fault of each classified failed row ("" a
+	// product failure); a failed row not in it is added to pending. With
+	// faults nil, a row is classified from its own Detail.
+	faults  map[int64]string
+	pending map[int64]bool
+}
+
+// inconclusiveRuns counts the runs whose result was inconclusive and names
+// the newest.
+type inconclusiveRuns struct {
+	count  int
+	reason string
+	newest *verdictSource
+}
+
+func (a *inconclusiveRuns) add(b inconclusiveRuns) {
+	a.count += b.count
+	if b.newest != nil && (a.newest == nil || b.newest.StartTime.After(*a.newest.StartTime)) {
+		a.reason, a.newest = b.reason, b.newest
+	}
+}
+
+// fault is the environment fault of row i, if it failed; ok is false when its
+// full error has not been classified yet.
+func (x *resultIndex) fault(i int) (reason string, ok bool) {
+	r := x.rows[i]
+	if r.Status != "failed" {
+		return "", true
+	}
+	if m := runEnvFault(r.EnvHealth, r.EnvReason); m != "" {
+		return m, true
+	}
+	if x.faults == nil {
+		return envFault(r.Detail), true
+	}
+	if f, ok := x.faults[r.ID]; ok {
+		return f, true
+	}
+	if x.pending != nil {
+		x.pending[r.ID] = true
+	}
+	return "", false
 }
 
 func (x *resultIndex) init(keep func(specRunRow) bool) {
@@ -772,15 +915,25 @@ func (x *resultIndex) init(keep func(specRunRow) bool) {
 	}
 }
 
-// match is the latest result of the test named name (exact, suffix or
-// regex) in project, or nil.
+// match is the latest decided result of the test named name (exact, suffix
+// or regex) in project, or nil.
 func (x *resultIndex) match(project, name, mode, hint string) *CoverageResult {
+	r, _ := x.lookup(project, name, mode, hint)
+	return r
+}
+
+// lookup is match plus the inconclusive runs it passed over. A run whose
+// matching instances failed, every failed one for an environment fault, is
+// inconclusive: it never decides, and the next older run in the window does.
+// While a failure still awaits classification lookup returns nil (the caller
+// classifies x.pending and asks again).
+func (x *resultIndex) lookup(project, name, mode, hint string) (*CoverageResult, inconclusiveRuns) {
 	rows := x.rows
 	var hits []int
 	if mode == "regex" {
 		re, err := regexp.Compile(name)
 		if err != nil {
-			return nil
+			return nil, inconclusiveRuns{}
 		}
 		for _, i := range x.byProject[project] {
 			if re.MatchString(rows[i].SpecName) {
@@ -801,10 +954,72 @@ func (x *resultIndex) match(project, name, mode, hint string) *CoverageResult {
 			hits = x.exact[project+"\x00"+strings.ReplaceAll(name, " ", "_")]
 		}
 	}
+	var inc inconclusiveRuns
 	if len(hits) == 0 {
-		return nil
+		return nil, inc
 	}
 	sort.SliceStable(hits, func(a, b int) bool { return rows[hits[a]].StartTime.After(rows[hits[b]].StartTime) })
+
+	// Walk the runs newest first. A run whose failed instances all failed
+	// for an environment fault is inconclusive and passed over; the first
+	// other run decides, and older runs are not classified.
+	start := len(hits)
+	waiting := 0 // runs scanned since the first unclassified failure
+	for k := 0; k < len(hits); {
+		id := rows[hits[k]].TestRunID
+		end := k
+		for end < len(hits) && rows[hits[end]].TestRunID == id {
+			end++
+		}
+		reason, failed, decides, unknown := "", false, false, false
+		for _, i := range hits[k:end] {
+			if rows[i].Status != "failed" {
+				continue
+			}
+			failed = true
+			f, ok := x.fault(i)
+			if !ok {
+				// Not classified yet: keep queueing the failures of the
+				// next few runs too, so a streak of inconclusive runs
+				// settles in a few rounds rather than one per run.
+				unknown = true
+				continue
+			}
+			if f == "" {
+				decides = true
+				break
+			}
+			if reason == "" {
+				reason = f
+			}
+		}
+		if waiting > 0 || unknown {
+			if waiting++; waiting > lookahead || !failed || decides {
+				return nil, inconclusiveRuns{}
+			}
+			k = end
+			continue
+		}
+		if !failed || decides {
+			start = k
+			break
+		}
+		inc.count++
+		if inc.newest == nil {
+			r := rows[hits[k]]
+			st := r.StartTime
+			inc.reason = reason
+			inc.newest = &verdictSource{SpecName: r.SpecName, Status: "inconclusive", RunID: r.RunID, StartTime: &st}
+		}
+		k = end
+	}
+	if waiting > 0 {
+		return nil, inconclusiveRuns{}
+	}
+	hits = hits[start:]
+	if len(hits) == 0 {
+		return nil, inc
+	}
 	r := rows[hits[0]]
 	// A parametrised test reports several instances per run: the newest
 	// run failed if any of its instances failed.
@@ -856,5 +1071,5 @@ func (x *resultIndex) match(project, name, mode, hint string) *CoverageResult {
 			res.Passed++
 		}
 	}
-	return res
+	return res, inc
 }

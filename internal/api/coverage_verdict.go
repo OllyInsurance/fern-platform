@@ -223,3 +223,138 @@ func newVerdictCounts() map[string]int {
 	}
 	return m
 }
+
+// --- inconclusive results -----------------------------------------------------
+//
+// A failure caused by a broken environment proves nothing about the product,
+// so it must not decide a verdict. The classes follow the olly merge queue's
+// pass/fail/inconclusive split. A result is inconclusive when it failed and
+// its message or attached error shows one of these environment faults; every
+// other failure (an assertion, a timeout, a 404 from a product route) stays
+// failed. The patterns come from the failures of the 2026-10-09 replica runs
+// (Fern runs 28875, 28877, 28883, 28890, 28891).
+
+// envFaultPattern is one environment fault: a failure line that matches re is
+// inconclusive, for the reason named.
+type envFaultPattern struct {
+	reason string
+	re     *regexp.Regexp
+}
+
+var envFaultPatterns = []envFaultPattern{
+	// The gateway's own error page (openresty/nginx in front of a replica):
+	// "<title>502 Bad Gateway</title>".
+	{"gateway 5xx", regexp.MustCompile(`(?i)\b50[234] (Bad Gateway|Service (Temporarily )?Unavailable|Gateway Time-?out)\b`)},
+	// The upstream is down or unreachable.
+	{"connection refused or reset", regexp.MustCompile(`(?i)(connection refused|ECONNREFUSED|connection reset|ECONNRESET|socket hang up|net::ERR_CONNECTION_(REFUSED|RESET|CLOSED))`)},
+	{"dns failure", regexp.MustCompile(`(?i)(no such host|ENOTFOUND|EAI_AGAIN|getaddrinfo|net::ERR_NAME_NOT_RESOLVED|server misbehaving)`)},
+	{"tls error", regexp.MustCompile(`(?i)(\btls: [a-z]|TLS handshake|\bx509: |net::ERR_CERT_|net::ERR_SSL_)`)},
+	// APISIX answers a path it has no route for with this body. A 404 a
+	// product route returns ("404 page not found" from the service itself)
+	// is a product failure.
+	{"gateway route missing", regexp.MustCompile(`404 Route Not Found`)},
+	{"replica health check failed", regexp.MustCompile(`(?i)\breplica\b[^\n]{0,80}(health ?check (failed|failing)|not healthy|unhealthy)`)},
+	// A Go e2e test that probes a third-party dependency before it asserts,
+	// and fails because the dependency is not usable here (the address
+	// provider refusing the environment's key on 2026-10-09).
+	{"environment precondition", regexp.MustCompile(`PRECONDITION[^\n]*not usable from this environment`)},
+}
+
+var (
+	// A status assertion that received a gateway status: Playwright
+	// "Expected: 200\nReceived: 502", the olly Go CHECK helper
+	// "CHECK FAIL Equal want=200 got=502". A test that expected a 5xx and got
+	// another one is a product failure, so the expected status must not be 5xx.
+	rePWStatus = regexp.MustCompile(`Expected:\s*(\d{3})\s+Received:\s*(50[234])\b`)
+	reGoStatus = regexp.MustCompile(`want=(\S+) got=(50[234])\b`)
+	reANSI     = regexp.MustCompile("\x1b\\[[0-9;]*m")
+	// reCheckFail is the olly Go CHECK helper's failure line.
+	reCheckFail = regexp.MustCompile(`CHECK FAIL\b`)
+)
+
+// lineEnvFault is the environment fault a single line shows, or "".
+func lineEnvFault(line string) string {
+	for _, p := range envFaultPatterns {
+		if p.re.MatchString(line) {
+			return p.reason
+		}
+	}
+	if m := reGoStatus.FindStringSubmatch(line); m != nil && !strings.HasPrefix(m[1], "5") {
+		return "gateway " + m[2]
+	}
+	return ""
+}
+
+// envFault is the reason a failure is inconclusive, or "" when it is a product
+// failure. text is the result's error message and stack trace.
+//
+// A Go test logs every check; when it logged CHECK FAIL lines, each one must
+// be an environment fault, so a product check that failed alongside a 502
+// keeps the result failed. Otherwise any line showing a fault decides.
+func envFault(text string) string {
+	if text == "" {
+		return ""
+	}
+	// Playwright colours its assertion output.
+	text = reANSI.ReplaceAllString(text, "")
+	lines := strings.Split(text, "\n")
+	reason := ""
+	sawCheckFail := false
+	for _, l := range lines {
+		if !reCheckFail.MatchString(l) {
+			continue
+		}
+		sawCheckFail = true
+		r := lineEnvFault(l)
+		if r == "" {
+			return ""
+		}
+		if reason == "" {
+			reason = r + ": " + clip(strings.TrimSpace(l))
+		}
+	}
+	if sawCheckFail {
+		return reason
+	}
+	if m := rePWStatus.FindStringSubmatch(text); m != nil && !strings.HasPrefix(m[1], "5") {
+		return "gateway " + m[2] + ": " + clip(strings.TrimSpace(firstLine(text)))
+	}
+	for _, l := range lines {
+		if r := lineEnvFault(l); r != "" {
+			return r + ": " + clip(strings.TrimSpace(l))
+		}
+	}
+	return ""
+}
+
+// runEnvFault is the reason a run's own marker says its environment was
+// unhealthy (test run metadata env_health, with env_health_reason), or "".
+// A run that sets env_health to anything but ok/healthy marks every failure
+// in it inconclusive.
+func runEnvFault(health, reason string) string {
+	switch strings.ToLower(strings.TrimSpace(health)) {
+	case "", "ok", "healthy", "up":
+		return ""
+	}
+	r := "environment marked " + strings.TrimSpace(health)
+	if reason != "" {
+		r += ": " + clip(reason)
+	}
+	return r
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+// clip keeps a reason short enough to display.
+func clip(s string) string {
+	const n = 200
+	if r := []rune(s); len(r) > n {
+		return string(r[:n]) + "..."
+	}
+	return s
+}

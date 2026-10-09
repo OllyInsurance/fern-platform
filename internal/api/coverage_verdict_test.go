@@ -376,3 +376,186 @@ func TestResultIndexKeepsDefectsPassApart(t *testing.T) {
 		t.Fatalf("defects lookup matched a gate row: %+v", r)
 	}
 }
+
+// Each environment fault class, from the failures of the 2026-10-09 replica
+// runs, is inconclusive; a product failure next to them stays failed.
+func TestEnvFault(t *testing.T) {
+	cases := []struct {
+		name, text, want string
+	}{
+		// gateway 502/503/504
+		{"gateway error page", `identity_pin_change_test.go:189: CHECK FAIL Equal want=400 got=502 msg=server must refuse "12a456"; body=<html> <head><title>502 Bad Gateway</title></head>`, "gateway 5xx"},
+		{"gateway status in a Go check", `eng495_address_lookup_test.go:697: CHECK FAIL Equal want=200 got=502 msg=the lookup is up now: {"error":"address provider error"}`, "gateway 502"},
+		{"gateway status in a Playwright assertion", "Error: the gateway lookup of B1 1DH answers\n\x1b[2mexpect(\x1b[22mreceived).toBe(expected)\nExpected: \x1b[32m200\x1b[39m\nReceived: \x1b[31m502\x1b[39m", "gateway 502"},
+		{"503 page", "Error: GET /healthz: 503 Service Temporarily Unavailable", "gateway 5xx"},
+		{"504 status", "Expected: 200\nReceived: 504", "gateway 504"},
+		// connection refused or reset
+		{"connection refused", `Post "http://10.20.0.100:9080/identity/me/pin": dial tcp 10.20.0.100:9080: connect: connection refused`, "connection refused or reset"},
+		{"econnreset", "Error: apiRequestContext.post: read ECONNRESET", "connection refused or reset"},
+		{"browser connection refused", "Error: page.goto: net::ERR_CONNECTION_REFUSED at https://member--x.dev.hiolly.com/", "connection refused or reset"},
+		// DNS
+		{"no such host", `dial tcp: lookup api--x.dev.hiolly.com: no such host`, "dns failure"},
+		{"enotfound", "Error: getaddrinfo ENOTFOUND api--x.dev.hiolly.com", "dns failure"},
+		// TLS
+		{"x509", `tls: failed to verify certificate: x509: certificate signed by unknown authority`, "tls error"},
+		{"browser cert", "Error: page.goto: net::ERR_CERT_DATE_INVALID", "tls error"},
+		// a route missing from the gateway (APISIX), not from the product
+		{"apisix route missing", `CHECK FAIL Equal want=200 got=404 msg=POST /me/pin; body={"error_msg":"404 Route Not Found"}`, "gateway route missing"},
+		// replica health
+		{"replica health check", "replica rjr2026100907531jp1 health check failed: identity not ready", "replica health check failed"},
+		// a third-party dependency the environment cannot use
+		{"env precondition", `eng495_address_lookup_test.go:371: PRECONDITION ENG-495: the address provider is not usable from this environment. enrollment answered 502`, "environment precondition"},
+
+		// product failures stay failed
+		{"product 404", `identity_pin_change_test.go:365: CHECK FAIL Equal want=200 got=404 msg=POST /me/pin should store the hashed PIN; body=404 page not found`, ""},
+		{"playwright 404", "Error: identity accepted the pin\nExpected: 200\nReceived: 404", ""},
+		{"assertion", "Error: the policy has a Schedule\nexpect(received).toBeTruthy()\nReceived: undefined", ""},
+		{"timeout", "TimeoutError: page.waitForURL: Timeout 45000ms exceeded.", ""},
+		{"product 500", `CHECK FAIL Equal want=200 got=500 msg=a DRAFT transaction is priced: {"error":"rating elements"}`, ""},
+		{"expected a 5xx, got another", "Expected: 503\nReceived: 502", ""},
+		{"expected a 5xx in Go", "CHECK FAIL Equal want=503 got=502 msg=x", ""},
+		{"a 502 next to a product failure", "CHECK FAIL Equal want=200 got=502 msg=x\nCHECK FAIL True got=false msg=the event was published", ""},
+		{"passing check with a 502", "CHECK PASS Equal want=502 got=502 msg=misconfiguration is visible\nCHECK FAIL True got=false msg=the banner shows", ""},
+		{"empty", "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := envFault(c.text)
+			if c.want == "" && got != "" || c.want != "" && !strings.HasPrefix(got, c.want+": ") {
+				t.Fatalf("envFault = %q, want class %q", got, c.want)
+			}
+		})
+	}
+}
+
+// A run that marks its environment unhealthy makes every failure in it
+// inconclusive.
+func TestRunEnvFault(t *testing.T) {
+	for health, want := range map[string]bool{"": false, "ok": false, "healthy": false, "unhealthy": true, "down": true} {
+		if got := runEnvFault(health, "gateway 502 at start") != ""; got != want {
+			t.Errorf("runEnvFault(%q) inconclusive = %v, want %v", health, got, want)
+		}
+	}
+}
+
+func envRows(rows ...specRunRow) (gate, defects *resultIndex) {
+	gate, defects = &resultIndex{rows: rows}, &resultIndex{rows: rows}
+	gate.init(func(r specRunRow) bool { return !r.DefectsPass && !strings.HasPrefix(r.SpecName, GoDefectsPrefix) })
+	defects.init(func(r specRunRow) bool { return r.DefectsPass || strings.HasPrefix(r.SpecName, GoDefectsPrefix) })
+	return gate, defects
+}
+
+const gateway502 = "Error: enrollment answers the live lookup\nExpected: 200\nReceived: 502"
+
+// An inconclusive result never decides: the test keeps its previous decided
+// result in the window and the criterion its verdict.
+func TestInconclusiveKeepsPreviousVerdict(t *testing.T) {
+	now := time.Now()
+	gate, _ := envRows(
+		specRunRow{ID: 3, ProjectID: "p", SpecName: "TestA", Status: "failed", TestRunID: 3, RunID: "r3", StartTime: now, Detail: gateway502},
+		specRunRow{ID: 2, ProjectID: "p", SpecName: "TestA", Status: "failed", TestRunID: 2, RunID: "r2", StartTime: now.Add(-time.Hour), Detail: "x: connect: connection refused"},
+		specRunRow{ID: 1, ProjectID: "p", SpecName: "TestA", Status: "passed", TestRunID: 1, RunID: "r1", StartTime: now.Add(-2 * time.Hour)},
+	)
+	r, inc := gate.lookup("p", "TestA", "exact", "")
+	if r == nil || r.Status != "passed" || r.TestRunID != 1 || r.Runs != 1 || r.Passed != 1 {
+		t.Fatalf("latest = %+v, want the passed run 1", r)
+	}
+	if inc.count != 2 || !strings.HasPrefix(inc.reason, "gateway 502: ") || inc.newest == nil || inc.newest.RunID != "r3" {
+		t.Fatalf("inconclusive = %+v", inc)
+	}
+	a := ct("a", "TestA", r)
+	if v, _ := criterionVerdict([]*coverageTest{a}); v != VerdictPassing {
+		t.Fatalf("criterion = %s, want passing", v)
+	}
+
+	// The same for a known gap: a 502 does not turn it into a failure.
+	gate, _ = envRows(
+		specRunRow{ID: 2, ProjectID: "p", SpecName: "TestB", Status: "failed", TestRunID: 2, StartTime: now, Detail: gateway502},
+		specRunRow{ID: 1, ProjectID: "p", SpecName: "TestB", Status: "skipped", TestRunID: 1, StartTime: now.Add(-time.Hour), Detail: "KNOWN GAP ENG-1 S01: no route"},
+	)
+	if r := gate.match("p", "TestB", "exact", ""); r == nil || testVerdict("TestB", r) != VerdictKnownGap {
+		t.Fatalf("known gap lost to a 502: %+v", r)
+	}
+}
+
+// With nothing decided earlier in the window, the criterion is not_run.
+func TestInconclusiveAloneIsNotRun(t *testing.T) {
+	gate, _ := envRows(specRunRow{ID: 1, ProjectID: "p", SpecName: "TestA", Status: "failed", TestRunID: 1, StartTime: time.Now(), Detail: gateway502})
+	r, inc := gate.lookup("p", "TestA", "exact", "")
+	if r != nil || inc.count != 1 {
+		t.Fatalf("latest = %+v, inconclusive = %+v", r, inc)
+	}
+	if v, _ := criterionVerdict([]*coverageTest{ct("a", "TestA", r)}); v != VerdictNotRun {
+		t.Fatalf("criterion = %s, want not_run", v)
+	}
+}
+
+// A product failure decides, even in a run that also had environment faults.
+func TestProductFailureStillDecides(t *testing.T) {
+	now := time.Now()
+	gate, _ := envRows(
+		specRunRow{ID: 3, ProjectID: "p", SpecName: "TestA", Status: "failed", TestRunID: 2, StartTime: now, Detail: "Expected: 200\nReceived: 404"},
+		specRunRow{ID: 2, ProjectID: "p", SpecName: "TestA", Status: "failed", TestRunID: 2, StartTime: now, Detail: gateway502},
+		specRunRow{ID: 1, ProjectID: "p", SpecName: "TestA", Status: "passed", TestRunID: 1, StartTime: now.Add(-time.Hour)},
+	)
+	r, inc := gate.lookup("p", "TestA", "exact", "")
+	if r == nil || r.Status != "failed" || r.TestRunID != 2 || inc.count != 0 {
+		t.Fatalf("latest = %+v, inconclusive = %+v", r, inc)
+	}
+}
+
+// The run-level marker makes a failure inconclusive whatever it says.
+func TestRunMarkerMakesFailureInconclusive(t *testing.T) {
+	now := time.Now()
+	gate, _ := envRows(
+		specRunRow{ID: 2, ProjectID: "p", SpecName: "TestA", Status: "failed", TestRunID: 2, StartTime: now, Detail: "Expected: 200\nReceived: 404", EnvHealth: "unhealthy", EnvReason: "identity not ready"},
+		specRunRow{ID: 1, ProjectID: "p", SpecName: "TestA", Status: "passed", TestRunID: 1, StartTime: now.Add(-time.Hour)},
+	)
+	r, inc := gate.lookup("p", "TestA", "exact", "")
+	if r == nil || r.Status != "passed" || inc.count != 1 || inc.reason != "environment marked unhealthy: identity not ready" {
+		t.Fatalf("latest = %+v, inconclusive = %+v", r, inc)
+	}
+}
+
+// A defects-pass run that hit a 502 does not turn a defect into a fix or a
+// fix into a defect: the earlier defects-pass result stands.
+func TestInconclusiveDefectsPass(t *testing.T) {
+	now := time.Now()
+	_, defects := envRows(
+		specRunRow{ID: 2, ProjectID: "p", SpecName: "defects/TestA/defect_1", Status: "failed", TestRunID: 2, StartTime: now, DefectsPass: true,
+			Detail: "CHECK FAIL Equal want=200 got=502 msg=POST /me/pin; body=<title>502 Bad Gateway</title>"},
+		specRunRow{ID: 1, ProjectID: "p", SpecName: "defects/TestA/defect_1", Status: "passed", TestRunID: 1, StartTime: now.Add(-time.Hour), DefectsPass: true},
+	)
+	d, inc := defects.lookup("p", "defects/TestA/defect 1", "exact", "")
+	if d == nil || d.Status != "passed" || inc.count != 1 {
+		t.Fatalf("defects latest = %+v, inconclusive = %+v", d, inc)
+	}
+	tc := &coverageTest{Key: "a", Name: "TestA/defect 1", DefectsLatest: d}
+	if v, _ := tc.outcome(); v != VerdictPassing {
+		t.Fatalf("outcome = %s, want passing", v)
+	}
+}
+
+// In production a failure's full error is fetched lazily: the lookup queues
+// it and answers nothing until it is classified.
+func TestLookupWaitsForClassification(t *testing.T) {
+	now := time.Now()
+	gate, _ := envRows(
+		specRunRow{ID: 3, ProjectID: "p", SpecName: "TestA", Status: "failed", TestRunID: 3, StartTime: now},
+		specRunRow{ID: 2, ProjectID: "p", SpecName: "TestA", Status: "failed", TestRunID: 2, StartTime: now.Add(-time.Hour)},
+		specRunRow{ID: 1, ProjectID: "p", SpecName: "TestA", Status: "passed", TestRunID: 1, StartTime: now.Add(-2 * time.Hour)},
+	)
+	gate.faults, gate.pending = map[int64]string{}, map[int64]bool{}
+	if r, _ := gate.lookup("p", "TestA", "exact", ""); r != nil {
+		t.Fatalf("answered before classification: %+v", r)
+	}
+	if !gate.pending[3] || !gate.pending[2] {
+		t.Fatalf("pending = %v, want both failures queued", gate.pending)
+	}
+	gate.faults[3], gate.faults[2] = "gateway 502: x", "dns failure: y"
+	gate.pending = map[int64]bool{}
+	r, inc := gate.lookup("p", "TestA", "exact", "")
+	if r == nil || r.TestRunID != 1 || inc.count != 2 || len(gate.pending) != 0 {
+		t.Fatalf("latest = %+v, inconclusive = %+v, pending = %v", r, inc, gate.pending)
+	}
+}
