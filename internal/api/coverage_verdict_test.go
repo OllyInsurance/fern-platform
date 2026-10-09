@@ -308,6 +308,39 @@ func TestDefectsPassDecidesDefectTests(t *testing.T) {
 	}
 }
 
+// A fixed defect drops its helpers.Defect marker and keeps its name, so the
+// gate runs it and the defects pass never runs it again. A gate run that ran
+// the test after the defects pass decides it.
+func TestNewerGateRunBeatsStaleDefectsPass(t *testing.T) {
+	now := time.Now()
+	old := res("failed", "defects/TestX/defect_2371", "")
+	old.StartTime = now.Add(-24 * time.Hour)
+	gatePass := res("passed", "TestX/defect_2371", "")
+	gatePass.StartTime = now
+	gateFail := res("failed", "TestX/defect_2371", "")
+	gateFail.StartTime = now
+	olderGatePass := res("passed", "TestX/defect_2371", "")
+	olderGatePass.StartTime = now.Add(-48 * time.Hour)
+	newSkip := res("skipped", "TestX/defect_2371", "known_defect")
+	newSkip.StartTime = now
+	for _, c := range []struct {
+		name    string
+		latest  *CoverageResult
+		want    string
+		fromDef bool
+	}{
+		{"a newer gate pass decides: the marker is gone", gatePass, VerdictPassing, false},
+		{"a newer gate failure is still the defect", gateFail, VerdictDefect, false},
+		{"an older gate pass loses to the defects pass", olderGatePass, VerdictDefect, true},
+		{"a newer gate skip leaves it to the defects pass", newSkip, VerdictDefect, true},
+	} {
+		tt := &coverageTest{Key: "k", Name: "TestX/defect 2371", Latest: c.latest, DefectsLatest: old}
+		if v, r := tt.outcome(); v != c.want || (r == old) != c.fromDef {
+			t.Errorf("%s: got %s from %+v, want %s (from defects pass: %v)", c.name, v, r, c.want, c.fromDef)
+		}
+	}
+}
+
 // Defects-pass rows never match a gate lookup, and gate rows never match a
 // defects lookup, even with a pattern that would catch both.
 func TestResultIndexKeepsDefectsPassApart(t *testing.T) {

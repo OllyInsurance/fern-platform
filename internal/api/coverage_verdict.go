@@ -99,7 +99,7 @@ func testVerdict(name string, r *CoverageResult) string {
 // other test, and a defect test the defects pass has not run, is decided by
 // its gate result.
 func (t *coverageTest) outcome() (string, *CoverageResult) {
-	if d := t.DefectsLatest; d != nil {
+	if d := t.DefectsLatest; d != nil && !gateRanSince(t.Latest, d) {
 		defectNamed := reDefectName.MatchString(t.Name) || reDefectName.MatchString(strings.TrimPrefix(d.SpecName, GoDefectsPrefix))
 		if defectNamed || t.Latest == nil || t.Latest.Status == "skipped" {
 			switch d.Status {
@@ -111,6 +111,18 @@ func (t *coverageTest) outcome() (string, *CoverageResult) {
 		}
 	}
 	return testVerdict(t.Name, t.Latest), t.Latest
+}
+
+// gateRanSince says whether the gate ran the test (passed or failed, not
+// skipped) after the defects pass did. A fixed defect drops its
+// helpers.Defect marker but keeps its "defect_N" name, so the gate runs it
+// and the defects pass never runs it again; its last defects-pass failure is
+// then stale and the newer gate run decides.
+func gateRanSince(g, d *CoverageResult) bool {
+	if g == nil || d == nil || (g.Status != "passed" && g.Status != "failed") {
+		return false
+	}
+	return g.StartTime.After(d.StartTime)
 }
 
 // hasResult says whether the test has any result in the window.
