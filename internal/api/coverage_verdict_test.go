@@ -291,6 +291,14 @@ func TestDefectsPassDecidesDefectTests(t *testing.T) {
 			DefectsLatest: res("failed", "defects/TestX", "")}, VerdictPassing, false},
 		{"only the defects pass ran it", &coverageTest{Key: "k", Name: "TestY/S02 clip", DefectsLatest: res("failed", "defects/TestY/S02_clip", "")},
 			VerdictDefect, true},
+		{"a sibling the gate held back for a defect", &coverageTest{Key: "k", Name: "TestY/S02 clip", Latest: res("skipped", "TestY/S02_clip", "known_defect"),
+			DefectsLatest: res("failed", "defects/TestY/S02_clip", "")}, VerdictDefect, true},
+		{"a known-gap sibling is not decided by the defects pass", &coverageTest{Key: "k", Name: "TestZ/four and five digits", Latest: res("skipped", "TestZ/four_and_five_digits", "known_gap"),
+			DefectsLatest: res("failed", "defects/TestZ/four_and_five_digits", "")}, VerdictKnownGap, false},
+		{"a plain-skipped sibling is not decided by the defects pass", &coverageTest{Key: "k", Name: "TestZ/four and five digits", Latest: res("skipped", "TestZ/four_and_five_digits", ""),
+			DefectsLatest: res("failed", "defects/TestZ/four_and_five_digits", "")}, VerdictNotRun, false},
+		{"a fixme sibling is not decided by the defects pass", &coverageTest{Key: "k", Name: "TestZ/clip", Latest: res("skipped", "TestZ/clip", "fixme"),
+			DefectsLatest: res("passed", "defects/TestZ/clip", "")}, VerdictKnownGap, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -98,10 +98,20 @@ func testVerdict(name string, r *CoverageResult) string {
 // there means the defect still reproduces, passed means it is fixed. Every
 // other test, and a defect test the defects pass has not run, is decided by
 // its gate result.
+//
+// The defects pass runs a defect subtest by its parent's -run pattern, so
+// the parent's other subtests run there too. A sibling the gate skipped for
+// another reason (a KNOWN GAP, a fixme, a plain skip) is not a defect test:
+// its defects-pass result must not decide it, or one flaky defects-pass
+// run turns a known gap into a defect (a PIN-length criterion on 2026-10-09: a 502 in
+// the defects pass on a known-gap sibling of a defect subtest). Only a
+// defect-named test, a test the gate never reported, or a gate skip that
+// says it is held back by a filed defect is the defects pass's to decide.
 func (t *coverageTest) outcome() (string, *CoverageResult) {
 	if d := t.DefectsLatest; d != nil && !gateRanSince(t.Latest, d) {
 		defectNamed := reDefectName.MatchString(t.Name) || reDefectName.MatchString(strings.TrimPrefix(d.SpecName, GoDefectsPrefix))
-		if defectNamed || t.Latest == nil || t.Latest.Status == "skipped" {
+		heldByDefect := t.Latest != nil && t.Latest.Status == "skipped" && t.Latest.GapMarker == "known_defect"
+		if defectNamed || t.Latest == nil || heldByDefect {
 			switch d.Status {
 			case "failed":
 				return VerdictDefect, d
