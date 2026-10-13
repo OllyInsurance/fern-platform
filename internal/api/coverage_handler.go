@@ -972,25 +972,33 @@ func (x *resultIndex) lookup(project, name, mode, hint string) (*CoverageResult,
 			end++
 		}
 		reason, failed, decides, unknown := "", false, false, false
-		for _, i := range hits[k:end] {
-			if rows[i].Status != "failed" {
-				continue
-			}
-			failed = true
-			f, ok := x.fault(i)
-			if !ok {
-				// Not classified yet: keep queueing the failures of the
-				// next few runs too, so a streak of inconclusive runs
-				// settles in a few rounds rather than one per run.
-				unknown = true
-				continue
-			}
-			if f == "" {
-				decides = true
-				break
-			}
-			if reason == "" {
-				reason = f
+		// A run marked unhealthy (env_health) decides only through a pass.
+		// Its skips are passed over like its failures: a test that skips on
+		// a missing dependency ("kafka event watcher unavailable") says
+		// nothing about the product either.
+		if m := runEnvFault(rows[hits[k]].EnvHealth, rows[hits[k]].EnvReason); m != "" && !anyPassed(rows, hits[k:end]) {
+			failed, reason = true, m
+		} else {
+			for _, i := range hits[k:end] {
+				if rows[i].Status != "failed" {
+					continue
+				}
+				failed = true
+				f, ok := x.fault(i)
+				if !ok {
+					// Not classified yet: keep queueing the failures of the
+					// next few runs too, so a streak of inconclusive runs
+					// settles in a few rounds rather than one per run.
+					unknown = true
+					continue
+				}
+				if f == "" {
+					decides = true
+					break
+				}
+				if reason == "" {
+					reason = f
+				}
 			}
 		}
 		if waiting > 0 || unknown {
@@ -1072,4 +1080,14 @@ func (x *resultIndex) lookup(project, name, mode, hint string) (*CoverageResult,
 		}
 	}
 	return res, inc
+}
+
+// anyPassed reports whether any of the rows at idx passed.
+func anyPassed(rows []specRunRow, idx []int) bool {
+	for _, i := range idx {
+		if rows[i].Status == "passed" {
+			return true
+		}
+	}
+	return false
 }

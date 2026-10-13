@@ -517,6 +517,38 @@ func TestRunMarkerMakesFailureInconclusive(t *testing.T) {
 	}
 }
 
+// In a run marked unhealthy a skip is passed over too: a test that skipped
+// on a missing dependency does not turn a proven criterion into not_run.
+func TestRunMarkerMakesSkipInconclusive(t *testing.T) {
+	now := time.Now()
+	gate, _ := envRows(
+		specRunRow{ID: 2, ProjectID: "p", SpecName: "TestA", Status: "skipped", TestRunID: 2, StartTime: now, Detail: "kafka event watcher unavailable", EnvHealth: "unhealthy", EnvReason: "post: kafka container not running"},
+		specRunRow{ID: 1, ProjectID: "p", SpecName: "TestA", Status: "passed", TestRunID: 1, StartTime: now.Add(-time.Hour)},
+	)
+	r, inc := gate.lookup("p", "TestA", "exact", "")
+	if r == nil || r.Status != "passed" || r.TestRunID != 1 || inc.count != 1 || inc.reason != "environment marked unhealthy: post: kafka container not running" {
+		t.Fatalf("latest = %+v, inconclusive = %+v", r, inc)
+	}
+}
+
+// A pass in a run marked unhealthy still decides: the stack served the test.
+// A skip in a healthy run still decides as before.
+func TestRunMarkerPassStillDecides(t *testing.T) {
+	now := time.Now()
+	gate, _ := envRows(
+		specRunRow{ID: 3, ProjectID: "p", SpecName: "TestA", Status: "passed", TestRunID: 3, StartTime: now, EnvHealth: "unhealthy", EnvReason: "pre: novu down"},
+		specRunRow{ID: 2, ProjectID: "p", SpecName: "TestA", Status: "failed", TestRunID: 2, StartTime: now.Add(-time.Hour), Detail: "Expected: 1\nReceived: 2"},
+		specRunRow{ID: 4, ProjectID: "p", SpecName: "TestB", Status: "skipped", TestRunID: 3, StartTime: now, EnvHealth: "healthy"},
+		specRunRow{ID: 5, ProjectID: "p", SpecName: "TestB", Status: "passed", TestRunID: 2, StartTime: now.Add(-time.Hour)},
+	)
+	if r, inc := gate.lookup("p", "TestA", "exact", ""); r == nil || r.Status != "passed" || r.TestRunID != 3 || inc.count != 0 {
+		t.Fatalf("TestA latest = %+v, inconclusive = %+v", r, inc)
+	}
+	if r, inc := gate.lookup("p", "TestB", "exact", ""); r == nil || r.Status != "skipped" || r.TestRunID != 3 || inc.count != 0 {
+		t.Fatalf("TestB latest = %+v, inconclusive = %+v", r, inc)
+	}
+}
+
 // A defects-pass run that hit a 502 does not turn a defect into a fix or a
 // fix into a defect: the earlier defects-pass result stands.
 func TestInconclusiveDefectsPass(t *testing.T) {
