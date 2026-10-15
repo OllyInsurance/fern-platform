@@ -258,6 +258,11 @@ var envFaultPatterns = []envFaultPattern{
 	// and fails because the dependency is not usable here (the address
 	// provider refusing the environment's key on 2026-10-09).
 	{"environment precondition", regexp.MustCompile(`PRECONDITION[^\n]*not usable from this environment`)},
+	// A Go e2e check that failed while another test on the replica held a
+	// declared outage (olly tests/e2e/check/outage.go): a database cut
+	// narrowed to one service fails every test in the other workers that
+	// needs that service (CI run 32421, 2026-10-15).
+	{"declared outage", regexp.MustCompile(`CHECK FAIL\b[^\n]* DURING DECLARED OUTAGE \S+`)},
 }
 
 var (
