@@ -591,3 +591,24 @@ func TestLookupWaitsForClassification(t *testing.T) {
 		t.Fatalf("latest = %+v, inconclusive = %+v, pending = %v", r, inc, gate.pending)
 	}
 }
+
+// A run that reports no real commit (a hand run's "local", a dirty tree) is
+// not a run of the branch it names: Fern 32298, an app run on a replica with
+// git_sha "local" and branch "main", moved 13 criteria to failing.
+func TestBranchRowsNeedACommit(t *testing.T) {
+	now := time.Now()
+	sha := "23747056f6f2517885ac3cc6db1f839405eadf2d"
+	rows := []specRunRow{
+		{ID: 3, ProjectID: "p", SpecName: "TestA", Status: "failed", TestRunID: 3, GitSHA: "local", StartTime: now},
+		{ID: 2, ProjectID: "p", SpecName: "TestA", Status: "failed", TestRunID: 2, GitSHA: sha + "-dirty", StartTime: now.Add(-time.Minute)},
+		{ID: 1, ProjectID: "p", SpecName: "TestA", Status: "passed", TestRunID: 1, GitSHA: sha, StartTime: now.Add(-time.Hour)},
+	}
+	gate, _ := envRows(branchRows(rows, "main")...)
+	if r := gate.match("p", "TestA", "exact", ""); r == nil || r.Status != "passed" || r.TestRunID != 1 {
+		t.Fatalf("latest = %+v, want the passed run 1 at a real commit", r)
+	}
+	// branch=any keeps every run.
+	if got := len(branchRows(rows, "any")); got != 3 {
+		t.Fatalf("branch any kept %d rows, want 3", got)
+	}
+}

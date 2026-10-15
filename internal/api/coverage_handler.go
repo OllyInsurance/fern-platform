@@ -699,6 +699,7 @@ func (h *CoverageHandler) attachResults(tests []*coverageTest, projects map[stri
 	if err := h.db.Raw(q, args...).Scan(&rows).Error; err != nil {
 		return err
 	}
+	rows = branchRows(rows, branch)
 
 	// The Go defects pass (test run metadata pass=defects, names prefixed
 	// "defects/") re-runs the subtests the gate skips for a filed defect. Its
@@ -1080,6 +1081,26 @@ func (x *resultIndex) lookup(project, name, mode, hint string) (*CoverageResult,
 		}
 	}
 	return res, inc
+}
+
+// commitSHA matches a full git commit id.
+var commitSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// branchRows drops, unless branch is "any", the rows of runs that report no
+// real commit. A hand run posts git_sha "local" or "<sha>-dirty" with
+// whatever branch its caller set, so its results say nothing about that
+// branch and must not decide a verdict on it.
+func branchRows(rows []specRunRow, branch string) []specRunRow {
+	if branch == "any" {
+		return rows
+	}
+	kept := rows[:0:0]
+	for _, r := range rows {
+		if commitSHA.MatchString(r.GitSHA) {
+			kept = append(kept, r)
+		}
+	}
+	return kept
 }
 
 // anyPassed reports whether any of the rows at idx passed.
