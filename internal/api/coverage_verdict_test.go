@@ -404,6 +404,9 @@ func TestEnvFault(t *testing.T) {
 		// replica health
 		{"replica health check", "replica rjr2026100907531jp1 health check failed: identity not ready", "replica health check failed"},
 		// a third-party dependency the environment cannot use
+		// a check that failed during another test's declared outage
+		{"declared outage", `claims_eligibility_rules_test.go:1168: CHECK FAIL Contains want={"element":500} got={"container":[202,201]} msg=submit claim: HTTP 500 {"error":"internal server error"} DURING DECLARED OUTAGE pgbouncer from:claims (pgbouncer-412-123)`, "declared outage"},
+		{"declared outage on every failed check", "CHECK FAIL Equal want=200 got=500 msg=x DURING DECLARED OUTAGE pgbouncer from:document-service (pgbouncer-1-1)\nCHECK FAIL Len want=1 got=0 msg=y DURING DECLARED OUTAGE pgbouncer from:document-service (pgbouncer-1-1)", "declared outage"},
 		{"env precondition", `eng495_address_lookup_test.go:371: PRECONDITION ENG-495: the address provider is not usable from this environment. enrollment answered 502`, "environment precondition"},
 
 		// product failures stay failed
@@ -416,6 +419,8 @@ func TestEnvFault(t *testing.T) {
 		{"expected a 5xx in Go", "CHECK FAIL Equal want=503 got=502 msg=x", ""},
 		{"a 502 next to a product failure", "CHECK FAIL Equal want=200 got=502 msg=x\nCHECK FAIL True got=false msg=the event was published", ""},
 		{"passing check with a 502", "CHECK PASS Equal want=502 got=502 msg=misconfiguration is visible\nCHECK FAIL True got=false msg=the banner shows", ""},
+		{"one check outside the outage", "CHECK FAIL Equal want=200 got=500 msg=x DURING DECLARED OUTAGE pgbouncer from:claims (pgbouncer-1-1)\nCHECK FAIL True got=false msg=the event was published", ""},
+		{"outage named only in a message", "CHECK FAIL True got=false msg=the claim lands DURING DECLARED OUTAGE", ""},
 		{"empty", "", ""},
 	}
 	for _, c := range cases {
