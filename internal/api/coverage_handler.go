@@ -1000,6 +1000,11 @@ func (x *resultIndex) lookup(project, name, mode, hint string) (*CoverageResult,
 					reason = f
 				}
 			}
+			if !failed {
+				if m := skippedForOutage(rows, hits[k:end]); m != "" {
+					failed, reason = true, m
+				}
+			}
 		}
 		if waiting > 0 || unknown {
 			if waiting++; waiting > lookahead || !failed || decides {
@@ -1080,6 +1085,28 @@ func (x *resultIndex) lookup(project, name, mode, hint string) (*CoverageResult,
 		}
 	}
 	return res, inc
+}
+
+// skippedForOutage is "declared outage" when the rows at idx are skips and
+// each one's STEP SKIP line names another test's declared outage (olly
+// tests/e2e/helpers/step.go): a sign-up refused while identity's mailer was
+// cut says nothing about the product (main CI run 39144106667, spec 484
+// NFR-01). A known gap or defect marker keeps the skip deciding.
+func skippedForOutage(rows []specRunRow, idx []int) string {
+	n := 0
+	for _, i := range idx {
+		if rows[i].Status != "skipped" {
+			return ""
+		}
+		if gapMarker(rows[i].Detail) != "" || !reSkipOutage.MatchString(rows[i].Detail) {
+			return ""
+		}
+		n++
+	}
+	if n == 0 {
+		return ""
+	}
+	return "declared outage"
 }
 
 // anyPassed reports whether any of the rows at idx passed.
