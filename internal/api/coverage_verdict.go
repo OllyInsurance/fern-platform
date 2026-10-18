@@ -276,6 +276,9 @@ var (
 	rePWStatus = regexp.MustCompile(`Expected:\s*(\d{3})\s+Received:\s*(50[234])\b`)
 	reGoStatus = regexp.MustCompile(`want=(\S+) got=(50[234])\b`)
 	reANSI     = regexp.MustCompile("\x1b\\[[0-9;]*m")
+	// reSkipOutage is olly's STEP SKIP line written during another test's
+	// declared outage (fern-junit-client keeps the skip output's tail).
+	reSkipOutage = regexp.MustCompile(`STEP SKIP\b[^\n]* DURING DECLARED OUTAGE \S+`)
 	// reCheckFail is the olly Go CHECK helper's failure line.
 	reCheckFail = regexp.MustCompile(`CHECK FAIL\b`)
 )

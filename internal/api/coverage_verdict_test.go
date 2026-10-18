@@ -600,3 +600,33 @@ func TestLookupWaitsForClassification(t *testing.T) {
 		t.Fatalf("latest = %+v, inconclusive = %+v, pending = %v", r, inc, gate.pending)
 	}
 }
+
+// A skip noted with another test's declared outage never decides: main CI run
+// 39144106667 skipped spec 484 NFR-01's sign-up (send-otp 503 while a novu
+// cut from identity was in place) and the skip took the criterion from
+// passing to not run. A skip without the note, or a known gap skipped during
+// an outage, still decides.
+func TestSkipDuringDeclaredOutageIsInconclusive(t *testing.T) {
+	now := time.Now()
+	noted := "eng484_social_test.go:1627: provision member: identity send-otp returned 503\n" +
+		"panic.go:615: STEP SKIP A new member in Whitechapel opens Social: skipped (reason logged above) DURING DECLARED OUTAGE novu from:identity (novu-215111-946550539)"
+	gate, _ := envRows(
+		specRunRow{ID: 3, ProjectID: "p", SpecName: "TestA", Status: "skipped", TestRunID: 3, RunID: "r3", StartTime: now, Detail: noted},
+		specRunRow{ID: 1, ProjectID: "p", SpecName: "TestA", Status: "passed", TestRunID: 1, RunID: "r1", StartTime: now.Add(-time.Hour)},
+		specRunRow{ID: 4, ProjectID: "p", SpecName: "TestB", Status: "skipped", TestRunID: 3, RunID: "r3", StartTime: now,
+			Detail: "x_test.go:9: provision member: identity send-otp returned 503\npanic.go:615: STEP SKIP A member signs up: skipped (reason logged above)"},
+		specRunRow{ID: 5, ProjectID: "p", SpecName: "TestB", Status: "passed", TestRunID: 1, RunID: "r1", StartTime: now.Add(-time.Hour)},
+		specRunRow{ID: 6, ProjectID: "p", SpecName: "TestC", Status: "skipped", TestRunID: 3, RunID: "r3", StartTime: now,
+			Detail: "x_test.go:9: KNOWN GAP ENG-1 S01: not built\npanic.go:615: STEP SKIP x: skipped (reason logged above) DURING DECLARED OUTAGE novu from:identity (novu-1-1)"},
+		specRunRow{ID: 7, ProjectID: "p", SpecName: "TestC", Status: "passed", TestRunID: 1, RunID: "r1", StartTime: now.Add(-time.Hour)},
+	)
+	if r, inc := gate.lookup("p", "TestA", "exact", ""); r == nil || r.Status != "passed" || r.TestRunID != 1 || inc.count != 1 || inc.reason != "declared outage" {
+		t.Fatalf("TestA latest = %+v, inconclusive = %+v", r, inc)
+	}
+	if r, inc := gate.lookup("p", "TestB", "exact", ""); r == nil || r.Status != "skipped" || r.TestRunID != 3 || inc.count != 0 {
+		t.Fatalf("TestB latest = %+v, inconclusive = %+v", r, inc)
+	}
+	if r, inc := gate.lookup("p", "TestC", "exact", ""); r == nil || r.Status != "skipped" || r.TestRunID != 3 || inc.count != 0 {
+		t.Fatalf("TestC latest = %+v, inconclusive = %+v", r, inc)
+	}
+}
