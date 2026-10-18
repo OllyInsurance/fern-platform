@@ -261,8 +261,11 @@ var envFaultPatterns = []envFaultPattern{
 	// A Go e2e check that failed while another test on the replica held a
 	// declared outage (olly tests/e2e/check/outage.go): a database cut
 	// narrowed to one service fails every test in the other workers that
-	// needs that service (CI run 32421, 2026-10-15).
-	{"declared outage", regexp.MustCompile(`CHECK FAIL\b[^\n]* DURING DECLARED OUTAGE \S+`)},
+	// needs that service (CI run 32421, 2026-10-15). A step stopped by a
+	// helper's t.Fatalf has no CHECK FAIL line, so its STEP FAIL line carries
+	// the note (CI run 39074890145, a consent cut failing Sahha deliveries);
+	// any CHECK FAIL line in the same result must still carry it too.
+	{"declared outage", regexp.MustCompile(`(?:CHECK|STEP) FAIL\b[^\n]* DURING DECLARED OUTAGE \S+`)},
 }
 
 var (

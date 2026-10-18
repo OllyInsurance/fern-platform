@@ -406,6 +406,8 @@ func TestEnvFault(t *testing.T) {
 		// a third-party dependency the environment cannot use
 		// a check that failed during another test's declared outage
 		{"declared outage", `claims_eligibility_rules_test.go:1168: CHECK FAIL Contains want={"element":500} got={"container":[202,201]} msg=submit claim: HTTP 500 {"error":"internal server error"} DURING DECLARED OUTAGE pgbouncer from:claims (pgbouncer-412-123)`, "declared outage"},
+		// a step a helper's t.Fatalf stopped (no CHECK FAIL line) during another test's declared outage
+		{"declared outage on a step stopped by t.Fatalf", "eng462_movement_test.go:1111: sahha webhook score.created: status 503 body={\"detail\":\"consent service unavailable; retry later\"}\npanic.go:615: STEP FAIL A member with a connected source has a scored day: a required check failed and stopped the test (error logged above) DURING DECLARED OUTAGE consent from:balance (consent-215498-95424579)", "declared outage"},
 		{"declared outage on every failed check", "CHECK FAIL Equal want=200 got=500 msg=x DURING DECLARED OUTAGE pgbouncer from:document-service (pgbouncer-1-1)\nCHECK FAIL Len want=1 got=0 msg=y DURING DECLARED OUTAGE pgbouncer from:document-service (pgbouncer-1-1)", "declared outage"},
 		{"env precondition", `eng495_address_lookup_test.go:371: PRECONDITION ENG-495: the address provider is not usable from this environment. enrollment answered 502`, "environment precondition"},
 
@@ -421,6 +423,8 @@ func TestEnvFault(t *testing.T) {
 		{"passing check with a 502", "CHECK PASS Equal want=502 got=502 msg=misconfiguration is visible\nCHECK FAIL True got=false msg=the banner shows", ""},
 		{"one check outside the outage", "CHECK FAIL Equal want=200 got=500 msg=x DURING DECLARED OUTAGE pgbouncer from:claims (pgbouncer-1-1)\nCHECK FAIL True got=false msg=the event was published", ""},
 		{"outage named only in a message", "CHECK FAIL True got=false msg=the claim lands DURING DECLARED OUTAGE", ""},
+		{"a product check next to a noted step", "CHECK FAIL True got=false msg=the event was published\nSTEP FAIL x: a check failed (error logged above) DURING DECLARED OUTAGE consent from:balance (consent-1-1)", ""},
+		{"a step with no note", "STEP FAIL x: a required check failed and stopped the test (error logged above)", ""},
 		{"empty", "", ""},
 	}
 	for _, c := range cases {
